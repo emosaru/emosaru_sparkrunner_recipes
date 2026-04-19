@@ -1,0 +1,5 @@
+registries:
+  - name: emosaru
+    description: EmoSaru's Local Recipes
+    recipes: recipes              # path to recipe YAML files
+    
