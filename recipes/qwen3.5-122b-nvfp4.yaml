@@ -6,26 +6,40 @@ min_nodes: 1
 container: vllm-node
 cluster_only: false
 metadata:
-  description: vLLM serving Qwen3.5-122B-A10B-NVFP4
+  description: vLLM serving Qwen3.5-122B-A10B-NVFP4 (SM121 Marlin + MTP-2, optimized)
 mods:
 - mods/fix-qwen3.5-chat-template
 defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.8
+  gpu_memory_utilization: 0.90
   max_model_len: 131072
-  max_num_batched_tokens: 8192
+  max_num_batched_tokens: 16384
+  max_num_seqs: 4
+  num_speculative_tokens: 2
+env:
+  # Force Marlin W4A16 dequant path — only working fast NVFP4 backend on SM121.
+  # FlashInfer TRT-LLM FP4 requires SM100+; CUTLASS FP4 kernels fail on GB10.
+  VLLM_USE_FLASHINFER_MOE_FP4: "0"
+  VLLM_NVFP4_GEMM_BACKEND: "marlin"
+  VLLM_TEST_FORCE_FP8_MARLIN: "1"
 command: |
   vllm serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --max-model-len {max_model_len} \
     --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
     --port {port} \
     --host {host} \
+    --tensor-parallel-size {tensor_parallel} \
+    --attention-backend FLASHINFER \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":{num_speculative_tokens}}' \
+    --load-format fastsafetensors \
     --enable-prefix-caching \
     --enable-auto-tool-choice \
     --tool-call-parser qwen3_coder \
     --reasoning-parser qwen3 \
     --chat-template unsloth.jinja \
-    -tp {tensor_parallel} \
-    --max-num-batched-tokens {max_num_batched_tokens}
+    --trust-remote-code
+    
