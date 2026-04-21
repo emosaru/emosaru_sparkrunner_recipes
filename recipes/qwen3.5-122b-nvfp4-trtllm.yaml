@@ -1,6 +1,6 @@
 recipe_version: '1'
 model: Sehyo/Qwen3.5-122B-A10B-NVFP4
-runtime: trtllm-distributed
+runtime: trtllm
 builder: eugr
 min_nodes: 1
 container: trtllm-node
@@ -55,4 +55,3 @@ command: |
       --max_seq_len {max_seq_len} \
       --kv_cache_free_gpu_memory_fraction {free_gpu_memory_fraction} \
       --extra_llm_api_options {extra_llm_api_options}
-      
