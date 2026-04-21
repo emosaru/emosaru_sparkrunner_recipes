@@ -1,0 +1,44 @@
+recipe_version: '2'
+model: Sehyo/Qwen3.5-122B-A10B-NVFP4
+runtime: sglang
+container: scitrera/dgx-spark-sglang:0.5.10
+metadata:
+  description: SGLang serving Qwen3.5-122B-A10B-NVFP4 (SM121 Marlin + MTP-2, optimized)
+  maintainer: scitrera.ai <open-source-team@scitrera.com>
+  model_params: 122B-A10B
+  model_dtype: nvfp4
+mods:
+- mods/fix-qwen3.5-chat-template
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.90
+  max_model_len: 131072
+  max_num_batched_tokens: 32768
+  max_num_seqs: 4
+  served_model_name: qwen3.5-122b-a10b-nvfp4
+  speculative_num_steps: 2
+  speculative_num_draft_tokens: 3
+env:
+  SGLANG_NVFP4_GEMM_BACKEND: "marlin"
+  SGLANG_USE_FLASHINFER_MOE_FP4: "0"
+command: |
+  sglang serve \
+      --model-path {model} \
+      --served-model-name {served_model_name} \
+      --context-length {max_model_len} \
+      --mem-fraction-static {gpu_memory_utilization} \
+      --max-prefill-tokens {max_num_batched_tokens} \
+      --max-running-requests {max_num_seqs} \
+      --tp-size {tensor_parallel} \
+      --host {host} \
+      --port {port} \
+      --attention-backend flashinfer \
+      --speculative-algorithm NEXTN \
+      --speculative-num-steps {speculative_num_steps} \
+      --speculative-num-draft-tokens {speculative_num_draft_tokens} \
+      --tool-call-parser qwen25 \
+      --reasoning-parser qwen3 \
+      --chat-template unsloth.jinja \
+      --trust-remote-code
