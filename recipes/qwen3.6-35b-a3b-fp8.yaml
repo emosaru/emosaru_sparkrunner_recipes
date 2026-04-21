@@ -36,6 +36,6 @@ command: |
     --load-format {load_format} \
     --attention-backend {attention_backend} \
     --enable-prefix-caching \
-    --chat-template-kwargs {"preserve_thinking": true} \
+    --default-chat-template-kwargs '{"preserve_thinking": true}' \
     -tp {tensor_parallel} \
     -pp {pipeline_parallel}
