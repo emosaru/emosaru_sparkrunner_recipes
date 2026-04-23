@@ -14,7 +14,7 @@ defaults:
   tensor_parallel: 1
   pipeline_parallel: 1
   gpu_memory_utilization: 0.90
-  max_model_len: 262144
+  max_model_len: 131072
   max_num_batched_tokens: 32768
   load_format: instanttensor
   kv_cache_dtype: fp8
@@ -27,16 +27,8 @@ command: |
   vllm serve {model} \
     --host {host} \
     --port {port} \
-    --max-model-len {max_model_len} \
-    --max-num-batched-tokens {max_num_batched_tokens} \
     --trust-remote-code \
-    --chat-template unsloth.jinja \
+    --max-model-len {max_model_len} \
     --gpu-memory-utilization {gpu_memory_utilization} \
-    --enable-auto-tool-choice \
-    --tool-call-parser {tool_call_parser} \
-    --reasoning-parser {reasoning_parser} \
-    --enable-prefix-caching \
-    --default-chat-template-kwargs '{"preserve_thinking": true}' \
-    --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
-    -tp {tensor_parallel} \
-    -pp {pipeline_parallel}
+    --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+
