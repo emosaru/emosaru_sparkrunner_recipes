@@ -21,6 +21,7 @@ command: |
     --trust-remote-code \
     --max-model-len {max_model_len} \
     --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-prefix-caching \
     --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
     --default-chat-template-kwargs '{"preserve_thinking": true}' \    
     --enable-auto-tool-choice \
