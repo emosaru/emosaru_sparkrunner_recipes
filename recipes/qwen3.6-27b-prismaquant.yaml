@@ -22,7 +22,6 @@ command: |
     --trust-remote-code \
     --load-format {load_format} \
     --max-model-len {max_model_len} \
-    --gpu-memory-utilization {gpu_memory_utilization} \
     --enable-prefix-caching \
     --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
     --chat-template unsloth.jinja \
