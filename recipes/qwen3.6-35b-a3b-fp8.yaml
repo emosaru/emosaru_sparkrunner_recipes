@@ -1,10 +1,10 @@
 recipe_version: '2'
-model: ykarout/Qwen3.6-35B-A3B-NVFP4
+model: Qwen/Qwen3.6-35B-A3B-FP8
 runtime: vllm
 builder: eugr
 container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
 metadata:
-  description: "Qwen3.6-35B-A3B"
+  description: "Qwen3.6-35B-A3B-FP8"
 mods:
 - mods/fix-qwen3-coder-next
 defaults:
