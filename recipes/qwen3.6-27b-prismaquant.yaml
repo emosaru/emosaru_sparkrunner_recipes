@@ -10,8 +10,9 @@ mods:
 defaults:
   port: 8000
   host: 0.0.0.0
-  gpu_memory_utilization: 0.4
+  gpu_memory_utilization: 0.9
   max_model_len: 262144
+  load_format: fastsafetensors
   tool_call_parser: qwen3_coder
   reasoning_parser: qwen3
 command: |
@@ -19,6 +20,7 @@ command: |
     --host {host} \
     --port {port} \
     --trust-remote-code \
+    --load-format {load_format} \
     --max-model-len {max_model_len} \
     --gpu-memory-utilization {gpu_memory_utilization} \
     --enable-prefix-caching \
