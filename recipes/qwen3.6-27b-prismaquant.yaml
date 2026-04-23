@@ -5,24 +5,11 @@ builder: eugr
 container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
 metadata:
   description: "Qwen3.6-27B-PrismaQuant-5.5bit-vllm"
-mods:
-- mods/fix-qwen3-coder-next
-- mods/fix-qwen3.5-chat-template
 defaults:
   port: 8000
   host: 0.0.0.0
-  tensor_parallel: 1
-  pipeline_parallel: 1
   gpu_memory_utilization: 0.90
   max_model_len: 131072
-  max_num_batched_tokens: 32768
-  load_format: instanttensor
-  kv_cache_dtype: fp8
-  attention_backend: flashinfer
-  tool_call_parser: qwen3_coder
-  reasoning_parser: qwen3
-env:
-  VLLM_NVFP4_GEMM_BACKEND: 'flashinfer-cutlass'
 command: |
   vllm serve {model} \
     --host {host} \
