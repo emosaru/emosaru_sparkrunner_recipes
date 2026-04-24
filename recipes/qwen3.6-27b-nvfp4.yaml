@@ -1,5 +1,5 @@
 recipe_version: '2'
-model: sakamakismile/Qwen3.6-27B-NVFP4
+model: vrfai/Qwen3.6-27B-NVFP4
 runtime: vllm
 builder: eugr
 container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
