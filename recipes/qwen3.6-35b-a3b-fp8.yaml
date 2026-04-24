@@ -15,7 +15,7 @@ defaults:
   gpu_memory_utilization: 0.8
   max_model_len: 262144
   max_num_batched_tokens: 16384
-  load_format: fastsafetensors
+  load_format: instanttensor
   kv_cache_dtype: fp8
   attention_backend: flashinfer
   tool_call_parser: qwen3_coder
