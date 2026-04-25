@@ -1,10 +1,10 @@
 recipe_version: '2'
-model: cyankiwi/Qwen3.6-27B-AWQ-BF16-INT4
+model: Intel/Qwen3.6-27B-int4-AutoRound
 runtime: vllm
 builder: eugr
 container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
 metadata:
-  description: "Qwen3.6-27B-NVFP4 \u2014 native NVFP4 format"
+  description: "Qwen3.6-27B-int4-AutoRound \u2014 native INT4 format"
 mods:
 - mods/fix-qwen3-coder-next
 - mods/fix-qwen3.5-chat-template
@@ -13,7 +13,7 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 1
   pipeline_parallel: 1
-  gpu_memory_utilization: 0.92
+  gpu_memory_utilization: 0.9
   max_model_len: 262144
   max_num_batched_tokens: 32768
   load_format: instanttensor
