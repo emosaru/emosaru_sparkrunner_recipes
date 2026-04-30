@@ -9,8 +9,6 @@ defaults:
   port: 8001
   host: 0.0.0.0
   max_model_len: 8192
-env:
-  CUDA_VISIBLE_DEVICES: '-1'
 command: |
   vllm serve {model} \
     --host {host} \
