@@ -1,6 +1,6 @@
 recipe_version: '2'
 model: nomic-ai/nomic-embed-text-v1.5
-runtime: vllm
+runtime: vllm-distributed
 builder: eugr
 container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
 metadata:
@@ -8,10 +8,16 @@ metadata:
 defaults:
   port: 8001
   host: 0.0.0.0
+  tensor_parallel: 1
+  pipeline_parallel: 1
   max_model_len: 8192
+  load_format: instanttensor
 command: |
   vllm serve {model} \
     --host {host} \
     --port {port} \
     --max-model-len {max_model_len} \
     --trust-remote-code
+    --load-format {load_format} \
+    -tp {tensor_parallel} \
+    -pp {pipeline_parallel}    
