@@ -1,0 +1,19 @@
+recipe_version: '2'
+model: nomic-ai/nomic-embed-text-v1.5
+runtime: vllm
+builder: eugr
+container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
+metadata:
+  description: "nomic-embed-text-v1.5 — CPU embedding inference"
+defaults:
+  port: 8001
+  host: 0.0.0.0
+  max_model_len: 8192
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --task embed \
+    --device cpu \
+    --trust-remote-code
