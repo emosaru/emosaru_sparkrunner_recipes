@@ -7,6 +7,7 @@ metadata:
   description: "Qwen3.6-35B-A3B-FP8"
 mods:
 - mods/fix-qwen3-coder-next
+- mods/vllm-tune
 defaults:
   port: 8000
   host: 0.0.0.0
