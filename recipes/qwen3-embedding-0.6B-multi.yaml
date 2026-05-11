@@ -1,0 +1,25 @@
+recipe_version: '2'
+model: Qwen/Qwen3-Embedding-0.6B
+runtime: vllm
+builder: eugr
+max_nodes: 1
+container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest
+metadata:
+  description: "Qwen3-Embedding-0.6B — multi-model co-tenant embedding variant"
+defaults:
+  port: 8001
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.07
+  max_model_len: 32768
+  load_format: safetensors
+command: |-
+  vllm serve {model} \
+    --runner pooling \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    -tp {tensor_parallel} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --load-format {load_format} \
+    --trust-remote-code
