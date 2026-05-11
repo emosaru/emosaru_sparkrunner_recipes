@@ -7,7 +7,7 @@ RECIPES_DIR="$REPO_DIR/recipes"
 
 RECIPES=(
   "qwen3.6-35b-a3b-fp8-multi"
-  "qwen3.6-27b-fp8-multi"
+  "qwen3.6-27b-prismaquant-multi"
   "qwen3-1.7b-fp8-multi"
   "qwen3-embedding-0.6B-multi"
 )

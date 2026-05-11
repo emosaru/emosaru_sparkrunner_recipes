@@ -12,7 +12,7 @@ PROXY_HOST="${PROXY_HOST:-0.0.0.0}"
 RECIPES=(
   "qwen3-embedding-0.6B-multi"   # smallest first — fastest to come up, frees the foreground sooner
   "qwen3-1.7b-fp8-multi"
-  "qwen3.6-27b-fp8-multi"
+  "qwen3.6-27b-prismaquant-multi"
   "qwen3.6-35b-a3b-fp8-multi"
 )
 
@@ -32,7 +32,7 @@ echo "▶ Waiting for endpoints to report ready…"
 declare -A PORTS=(
   [qwen3-embedding-0.6B-multi]=8001
   [qwen3-1.7b-fp8-multi]=8002
-  [qwen3.6-27b-fp8-multi]=8003
+  [qwen3.6-27b-prismaquant-multi]=8003
   [qwen3.6-35b-a3b-fp8-multi]=8000
 )
 for recipe in "${RECIPES[@]}"; do
