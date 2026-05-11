@@ -13,7 +13,10 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 1
   pipeline_parallel: 1
-  gpu_memory_utilization: 0.04
+  # CUMULATIVE — see header note in qwen3-embedding-0.6B-multi.yaml.
+  # Launch order (largest first): 35B → 27B → 1.7B (3rd) → embedding.
+  # Own share here: 0.04.
+  gpu_memory_utilization: 0.82
   max_model_len: 2048
   max_num_batched_tokens: 8192
   load_format: instanttensor

@@ -10,9 +10,14 @@ defaults:
   port: 8001
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.07
+  # CUMULATIVE share — vLLM's gpu_memory_utilization tells the engine how much
+  # of TOTAL memory must remain free, not its own share. With co-tenants, each
+  # value must be the sum of all PRIOR launches plus this model's own share.
+  # Launch order (largest first): 35B → 27B → 1.7B → embedding (4th, last).
+  # Own share here: 0.06. Final cumulative leaves ~12% / ~14 GB headroom.
+  gpu_memory_utilization: 0.88
   max_model_len: 32768
-  load_format: safetensors
+  load_format: instanttensor
 command: |-
   vllm serve {model} \
     --runner pooling \

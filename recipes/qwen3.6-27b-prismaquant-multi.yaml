@@ -11,10 +11,14 @@ mods:
 defaults:
   port: 8003
   host: 0.0.0.0
-  # 5.5-bit weights free ~8 GB vs FP8 — spend the savings on context.
-  gpu_memory_utilization: 0.40
-  # 192k context with FP8 KV cache (~131 KB/token) ≈ 26 GB KV — fits the share.
-  max_model_len: 196608
+  # CUMULATIVE — see header note in qwen3-embedding-0.6B-multi.yaml.
+  # Launch order (largest first): 35B → 27B (2nd) → 1.7B → embedding.
+  # Own share here: 0.35 (≈42 GB on a 119 GB unified pool — fits 18.5 GB
+  # weights + ~17 GB FP8 KV at 128k + workspace, with ~6 GB margin).
+  gpu_memory_utilization: 0.78
+  max_model_len: 131072
+  # instanttensor doesn't support the 5.5-bit PrismaQuant format; stay on
+  # fastsafetensors here.
   load_format: fastsafetensors
   kv_cache_dtype: fp8
   tool_call_parser: qwen3_coder

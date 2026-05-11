@@ -13,8 +13,11 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 1
   pipeline_parallel: 1
-  # Co-tenant budget: ~42% of unified memory leaves room for 27B (0.40) + 1.7B (0.04) + embed (0.07).
-  gpu_memory_utilization: 0.42
+  # CUMULATIVE — see header note in qwen3-embedding-0.6B-multi.yaml.
+  # Launch order (largest first): 35B (1st) → 27B → 1.7B → embedding.
+  # Own share here: 0.43 (≈51 GB on a 119 GB unified pool — fits ~35 GB
+  # weights + ~13 GB FP8 KV at 256k + workspace).
+  gpu_memory_utilization: 0.43
   # Full 256k context — MoE attention (4 KV heads, 48 layers) keeps KV cache ~13 GB at FP8.
   max_model_len: 262144
   max_num_batched_tokens: 16384
