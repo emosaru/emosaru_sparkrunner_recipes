@@ -11,11 +11,16 @@ mods:
 defaults:
   port: 8003
   host: 0.0.0.0
-  # CUMULATIVE — see header note in qwen3-embedding-0.6B-multi.yaml.
-  # Launch order (largest first): 35B → 27B (2nd) → 1.7B → embedding.
-  # Own share here: 0.35 (≈42 GB on a 119 GB unified pool — fits 18.5 GB
-  # weights + ~17 GB FP8 KV at 128k + workspace, with ~6 GB margin).
-  gpu_memory_utilization: 0.78
+  # gpu_memory_utilization caps this instance's share of total memory; vLLM's
+  # profiler sizes the KV pool to fit that budget. Do NOT use
+  # num_gpu_blocks_override here: this model is hybrid (Mamba + attention),
+  # so vLLM aligns block_size to 1600 tokens to match mamba page size, and a
+  # hand-picked block count silently becomes ~100× larger than intended and OOMs.
+  # 0.30 × 121 GB ≈ 36 GB → ~21.5 GB weights + ~2 GB MTP draft + ~12 GB KV;
+  # profiler picks ~464 blocks (~600k token capacity, 4.5× max context).
+  # Launch this FIRST so dense-27B CUDA-graph capture spike has clean memory.
+  gpu_memory_utilization: 0.30
+  max_num_seqs: 4
   max_model_len: 131072
   # instanttensor doesn't support the 5.5-bit PrismaQuant format; stay on
   # fastsafetensors here.
@@ -30,6 +35,7 @@ command: |
     --trust-remote-code \
     --load-format {load_format} \
     --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
     --gpu-memory-utilization {gpu_memory_utilization} \
     --kv-cache-dtype {kv_cache_dtype} \
     --enable-prefix-caching \

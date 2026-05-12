@@ -1,0 +1,12 @@
+name: smoke
+description: Single Qwen3-1.7B-FP8 smoke test — exercises both proxy endpoints end to end
+host: 192.168.1.236
+proxy:
+  host: 0.0.0.0
+  openai_port: 4000
+  anthropic_port: 4001
+models:
+  - recipe: recipes/qwen3-1.7b-fp8-smoke.yaml
+    name: Qwen/Qwen3-1.7B-FP8
+    port: 8002
+    ready_timeout_seconds: 900

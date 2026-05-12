@@ -4,7 +4,7 @@ runtime: vllm
 builder: eugr
 container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
 metadata:
-  description: "Qwen3-1.7B-FP8 — multi-model co-tenant classifier variant (2k ctx, minimal footprint)"
+  description: "Qwen3-1.7B-FP8 — smoke-test variant with a roomier memory budget so KV cache fits after CUDA-graph profiling reserves its share"
 mods:
 - mods/fix-qwen3-coder-next
 - mods/fix-qwen3.5-chat-template
@@ -13,9 +13,10 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 1
   pipeline_parallel: 1
-  # ~6 GB instance: 1.7 GB weights + tiny KV (2k ctx) + workspace.
-  gpu_memory_utilization: 0.05
-  max_model_len: 2048
+  # 0.04 leaves 0 GiB for KV after recent vLLM CUDA-graph profiling change.
+  # 0.08 gives ~10 GB total budget; CUDA graphs + 2k context fit comfortably.
+  gpu_memory_utilization: 0.08
+  max_model_len: 4096
   max_num_batched_tokens: 8192
   load_format: instanttensor
   kv_cache_dtype: fp8

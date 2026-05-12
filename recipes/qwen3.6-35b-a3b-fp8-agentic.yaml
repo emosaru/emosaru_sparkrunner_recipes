@@ -1,23 +1,27 @@
 recipe_version: '2'
-model: Qwen/Qwen3-1.7B-FP8
-runtime: vllm
+model: Qwen/Qwen3.6-35B-A3B-FP8
+runtime: vllm-distributed
 builder: eugr
-container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
+container: vllm-node
 metadata:
-  description: "Qwen3-1.7B-FP8 — multi-model co-tenant classifier variant (2k ctx, minimal footprint)"
+  description: "Qwen3.6-35B-A3B-FP8 — agentic-coding co-tenant (with 27B), native 256k"
 mods:
 - mods/fix-qwen3-coder-next
-- mods/fix-qwen3.5-chat-template
+- mods/vllm-tune
 defaults:
-  port: 8002
+  port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
   pipeline_parallel: 1
-  # ~6 GB instance: 1.7 GB weights + tiny KV (2k ctx) + workspace.
-  gpu_memory_utilization: 0.05
-  max_model_len: 2048
-  max_num_batched_tokens: 8192
-  load_format: instanttensor
+  # 0.38 × 121 GB ≈ 46 GB. The 27B (at util=0.40) loads first and consumes
+  # ~74 GB (48 GB budget + ~25 GB CPU/process overhead), leaving ~47 GB free
+  # for 35B's startup check. 0.40 here was 1.4 GB over that ceiling; 0.38
+  # fits with margin. Sum 0.40+0.38 = 0.78, still under earlyoom's 80% line.
+  gpu_memory_utilization: 0.38
+  # 128k context. Trimmed from 200k for more memory headroom.
+  max_model_len: 131072
+  max_num_batched_tokens: 16384
+  load_format: fastsafetensors
   kv_cache_dtype: fp8
   attention_backend: flashinfer
   tool_call_parser: qwen3_coder
@@ -30,8 +34,6 @@ command: |
     --port {port} \
     --max-model-len {max_model_len} \
     --max-num-batched-tokens {max_num_batched_tokens} \
-    --trust-remote-code \
-    --chat-template unsloth.jinja \
     --gpu-memory-utilization {gpu_memory_utilization} \
     --enable-auto-tool-choice \
     --tool-call-parser {tool_call_parser} \
@@ -40,6 +42,7 @@ command: |
     --load-format {load_format} \
     --attention-backend {attention_backend} \
     --enable-prefix-caching \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
     --default-chat-template-kwargs '{"preserve_thinking": true}' \
     -tp {tensor_parallel} \
     -pp {pipeline_parallel}

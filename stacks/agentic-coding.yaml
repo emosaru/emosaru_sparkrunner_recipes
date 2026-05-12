@@ -1,0 +1,20 @@
+name: agentic-coding
+description: 35B-A3B FP8 (sonnet/haiku) + 27B PrismaQuant 5.5bit (opus) on a single Spark
+host: 192.168.1.236
+proxy:
+  host: 0.0.0.0
+  openai_port: 4000
+  anthropic_port: 4001
+# Launch order matters: 27B first because its dense CUDA-graph capture spike
+# is much larger than the MoE 35B-A3B. See launch-agentic-coding-stack.sh for
+# the memory budgeting rationale (kept here as a recipe-level invariant).
+models:
+  - recipe: recipes/qwen3.6-27b-prismaquant-agentic.yaml
+    name: rdtand/Qwen3.6-27B-PrismaQuant-5.5bit-vllm
+    port: 8003
+    ready_timeout_seconds: 1800
+
+  - recipe: recipes/qwen3.6-35b-a3b-fp8-agentic.yaml
+    name: Qwen/Qwen3.6-35B-A3B-FP8
+    port: 8000
+    ready_timeout_seconds: 1800

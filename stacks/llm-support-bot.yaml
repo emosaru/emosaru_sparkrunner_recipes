@@ -1,0 +1,22 @@
+name: llm-support-bot
+description: 35B-A3B FP8 + 1.7B classifier + 0.6B embedding multi-tenant stack on a single Spark
+host: 192.168.1.236
+proxy:
+  host: 0.0.0.0
+  openai_port: 4000
+  anthropic_port: 4001
+models:
+  - recipe: recipes/qwen3.6-35b-a3b-fp8-multi.yaml
+    name: Qwen/Qwen3.6-35B-A3B-FP8
+    port: 8000
+    ready_timeout_seconds: 1800
+
+  - recipe: recipes/qwen3-1.7b-fp8-multi.yaml
+    name: Qwen/Qwen3-1.7B-FP8
+    port: 8002
+    ready_timeout_seconds: 900
+
+  - recipe: recipes/qwen3-embedding-0.6B-multi.yaml
+    name: Qwen/Qwen3-Embedding-0.6B
+    port: 8001
+    ready_timeout_seconds: 600

@@ -13,13 +13,19 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 1
   pipeline_parallel: 1
-  # CUMULATIVE — see header note in qwen3-embedding-0.6B-multi.yaml.
-  # Launch order (largest first): 35B (1st) → 27B → 1.7B → embedding.
-  # Own share here: 0.43 (≈51 GB on a 119 GB unified pool — fits ~35 GB
-  # weights + ~13 GB FP8 KV at 256k + workspace).
-  gpu_memory_utilization: 0.43
-  # Full 256k context — MoE attention (4 KV heads, 48 layers) keeps KV cache ~13 GB at FP8.
-  max_model_len: 262144
+  # gpu_memory_utilization caps this instance's share of total memory; vLLM's
+  # profiler sizes the KV pool to fit that budget. Do NOT use
+  # num_gpu_blocks_override: block_size depends on the model's attention/mamba
+  # alignment and a hand-picked count can silently balloon KV memory.
+  # 0.36 × 121 GB ≈ 43 GB → ~35 GB weights + ~6 GB FP8 KV + workspace.
+  # (System/process overhead on Spark runs ~27 GB, not the ~20 GB initially
+  # assumed — trimmed from 0.42 to leave room for embedding's 0.05 share.)
+  gpu_memory_utilization: 0.36
+  max_num_seqs: 4
+  # 128k context — matched to 27B's max_model_len for predictable headroom
+  # in the co-tenant stack. At util=0.36 the KV budget is ~3 GB; 128k fits
+  # with comfortable margin (vs. tight 192k or failed 256k).
+  max_model_len: 131072
   max_num_batched_tokens: 16384
   load_format: instanttensor
   kv_cache_dtype: fp8
@@ -34,6 +40,7 @@ command: |
     --port {port} \
     --max-model-len {max_model_len} \
     --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
     --gpu-memory-utilization {gpu_memory_utilization} \
     --enable-auto-tool-choice \
     --tool-call-parser {tool_call_parser} \
