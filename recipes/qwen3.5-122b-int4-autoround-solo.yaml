@@ -1,0 +1,44 @@
+recipe_version: '1'
+model: Intel/Qwen3.5-122B-A10B-int4-AutoRound
+runtime: vllm-distributed
+builder: eugr
+min_nodes: 1
+container: vllm-node-tf5
+cluster_only: false
+metadata:
+  description: "Qwen3.5-122B-A10B INT4 AutoRound (vLLM) — solo on Spark, adapted from upstream tf5 recipe (tp 2→1)"
+mods:
+- mods/fix-qwen3.5-autoround
+- mods/fix-qwen3.5-chat-template
+# Adapted from upstream eugr/spark-vllm-docker recipe qwen3.5-122b-int4-autoround.yaml.
+# Upstream targets tp=2 (2-Spark cluster); we run solo tp=1.
+# Weights ~60 GiB at INT4 leave more headroom than the NVFP4 variants (~74 GiB)
+# — util=0.85 gives ~103 GiB budget: weights + activations + ~40 GiB free for
+# KV cache and CUDA-graph workspace.
+defaults:
+  port: 8003
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.85
+  max_model_len: 131072
+  max_num_batched_tokens: 16384
+  max_num_seqs: 4
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: '1'
+command: |
+  vllm serve {model} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --port {port} \
+    --host {host} \
+    --tensor-parallel-size {tensor_parallel} \
+    --attention-backend FLASHINFER \
+    --kv-cache-dtype fp8 \
+    --enable-prefix-caching \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_xml \
+    --reasoning-parser qwen3 \
+    --chat-template unsloth.jinja \
+    --trust-remote-code

@@ -1,0 +1,17 @@
+name: agentic-coding-122b
+description: Qwen3.5-122B-A10B (INT4 AutoRound, vLLM) solo on a single Spark — agentic-coding workload
+host: 192.168.1.236
+proxy:
+  host: 0.0.0.0
+  openai_port: 4000
+  anthropic_port: 4001
+# Switched from NVFP4 (RedHatAI) to INT4-AutoRound (Intel) after measuring
+# 13 tok/s decode with the NVFP4 + RedHatAI weights (broken MTP head: 0%
+# spec-decode acceptance). INT4-AutoRound is the upstream-recommended path
+# with reported ~51 tok/s baseline on Spark; uses the vllm-node-tf5
+# container (already built on host) and the fix-qwen3.5-autoround mod.
+models:
+  - recipe: recipes/qwen3.5-122b-int4-autoround-solo.yaml
+    name: Intel/Qwen3.5-122B-A10B-int4-AutoRound
+    port: 8003
+    ready_timeout_seconds: 2400
