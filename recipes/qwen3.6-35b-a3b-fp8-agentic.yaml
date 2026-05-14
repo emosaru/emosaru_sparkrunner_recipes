@@ -20,6 +20,10 @@ defaults:
   gpu_memory_utilization: 0.38
   # 128k context. Trimmed from 200k for more memory headroom.
   max_model_len: 131072
+  # Prefill chunk size. Bumping to 32768 was tried (2026-05-14) and
+  # produced a slight regression on the 60k benchmark (1583 vs 1627 tok/s),
+  # likely because larger activation workspace evicted KV cache. 16384 is
+  # the sweet spot for this model on this util budget.
   max_num_batched_tokens: 16384
   load_format: fastsafetensors
   kv_cache_dtype: fp8

@@ -32,10 +32,19 @@ defaults:
   # (e.g. 4k prompts) consume only ~21k of the 262k token budget — so this
   # only forces queuing on truly long concurrent prompts.
   max_num_seqs: 5
+  # Prefill chunk size. Default is ~8192 which made 60k-prompt prefill take
+  # 8 chunks at ~742 tok/s — bumping to 16384 cuts that in half. Measured
+  # 60k benchmark cost was ~100s TTFT for 27B vs ~46s for the 35B which
+  # had this set. Activation memory scales linearly with this value.
+  max_num_batched_tokens: 16384
   load_format: fastsafetensors
   kv_cache_dtype: fp8
   tool_call_parser: qwen3_coder
   reasoning_parser: qwen3
+env:
+  # Speeds up Marlin GEMM kernels (PrismaQuant 5.5-bit uses Marlin).
+  # Already set on the 35B recipe for FP8 Marlin; same kernel family here.
+  VLLM_MARLIN_USE_ATOMIC_ADD: '1'
 command: |
   vllm serve {model} \
     --host {host} \
@@ -44,6 +53,7 @@ command: |
     --load-format {load_format} \
     --max-model-len {max_model_len} \
     --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
     --num-gpu-blocks-override {num_gpu_blocks_override} \
     --gpu-memory-utilization {gpu_memory_utilization} \
     --kv-cache-dtype {kv_cache_dtype} \
