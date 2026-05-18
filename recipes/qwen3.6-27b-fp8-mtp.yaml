@@ -30,6 +30,11 @@ defaults:
   speculative_config: '{"method": "mtp", "num_speculative_tokens": 2}'
 env:
   VLLM_MARLIN_USE_ATOMIC_ADD: '1'
+  # Action 2: re-enable CUDA memory pooling for NCCL (image default is 0)
+  NCCL_CUMEM_ENABLE: '1'
+  # Action 3: remove 1GbE (enP7s7) from NCCL's socket fallback list; keep both 200Gb/s RoCE NICs
+  NCCL_SOCKET_IFNAME: 'enp1s0f0np0,enP2p1s0f0np0'
+
 command: |
   vllm serve {model} \
     --host {host} \
