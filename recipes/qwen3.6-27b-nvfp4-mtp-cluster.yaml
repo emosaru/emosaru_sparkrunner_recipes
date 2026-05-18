@@ -1,0 +1,59 @@
+recipe_version: '2'
+# TODO: replace with HF Hub repo ID once checkpoint is pushed (e.g. emosaru/qwen3.6-27b-nvfp4-mtp)
+model: /home/mebell/code/emosaru_sparkrunner_recipes/quantize/output/qwen36-27b-nvfp4-mtp
+runtime: vllm
+builder: eugr
+min_nodes: 2
+container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
+metadata:
+  description: "Qwen3.6-27B NVFP4 (EmoSaru quant) with MTP — 2-Spark cluster (tp=2). Apples-to-apples with fp8-mtp-cluster at util=0.32, 256k context. Benchmark: 23.4 tok/s single-stream, 128 tok/s @c=8."
+mods:
+- mods/fix-nvfp4-mtp-weights
+- mods/fix-qwen3-coder-next
+- mods/fix-qwen3.6-chat-template
+defaults:
+  port: 8003
+  host: 0.0.0.0
+  tensor_parallel: 2
+  pipeline_parallel: 1
+  # Same budget as fp8-mtp recipe (0.32 × 121 GB ≈ 39 GB/node) for apples-to-apples
+  # comparison. NVFP4 weights are ~2× smaller than FP8 so KV headroom is larger;
+  # util could be raised without OOM, but keep fixed to isolate quant format effect.
+  gpu_memory_utilization: 0.32
+  max_model_len: 262144
+  max_num_batched_tokens: 32768
+  load_format: safetensors
+  kv_cache_dtype: fp8
+  attention_backend: flashinfer
+  tool_call_parser: qwen3_xml
+  reasoning_parser: qwen3
+  # NVFP4 MTP head supports 3 spec tokens (vs 2 for FP8 recipe)
+  speculative_config: '{"method": "mtp", "num_speculative_tokens": 3}'
+env:
+  # SM 121a (GB10 Superchip) — disable SM100-specific NVFP4 kernels that
+  # target B100/B200 die; they fail or produce wrong results on the Superchip die.
+  ENABLE_NVFP4_SM100: '0'
+  VLLM_MARLIN_USE_ATOMIC_ADD: '1'
+  NCCL_CUMEM_ENABLE: '1'
+  NCCL_SOCKET_IFNAME: 'enp1s0f0np0,enP2p1s0f0np0'
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --trust-remote-code \
+    --quantization modelopt \
+    --chat-template fixed_chat_template.jinja \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser {tool_call_parser} \
+    --reasoning-parser {reasoning_parser} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --load-format {load_format} \
+    --attention-backend {attention_backend} \
+    --speculative-config '{speculative_config}' \
+    --enable-prefix-caching \
+    -tp {tensor_parallel} \
+    -pp {pipeline_parallel}

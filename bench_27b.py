@@ -22,6 +22,10 @@ def safe_mean(vals):
 BASE_URL = "http://192.168.1.236:8003"
 MODEL    = "Qwen/Qwen3.6-27B-FP8"
 
+# Set by main() from CLI args; functions read these globals.
+_base_url = BASE_URL
+_model    = MODEL
+
 PROMPTS = {
     "short":  "Explain the difference between TCP and UDP in one paragraph.",
     "medium": (
@@ -48,7 +52,7 @@ MAX_TOKENS = 512
 def stream_generate(prompt: str, max_tokens: int = MAX_TOKENS) -> dict:
     """Stream one completion; return timing stats."""
     payload = {
-        "model": MODEL,
+        "model": _model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "stream": True,
@@ -62,7 +66,7 @@ def stream_generate(prompt: str, max_tokens: int = MAX_TOKENS) -> dict:
     in_tokens = 0
 
     with httpx.Client(timeout=300) as client:
-        with client.stream("POST", f"{BASE_URL}/v1/chat/completions",
+        with client.stream("POST", f"{_base_url}/v1/chat/completions",
                            json=payload, headers=headers) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines():
@@ -164,7 +168,7 @@ def run_concurrent_suite(concurrency_levels=(1, 2, 4, 8)):
 
 def check_alive():
     try:
-        r = httpx.get(f"{BASE_URL}/v1/models", timeout=10)
+        r = httpx.get(f"{_base_url}/v1/models", timeout=10)
         r.raise_for_status()
         models = [m["id"] for m in r.json().get("data", [])]
         print(f"Endpoint up. Models: {models}")
@@ -175,7 +179,12 @@ def check_alive():
 
 
 def main():
+    global _base_url, _model
     ap = argparse.ArgumentParser(description="27B throughput benchmark")
+    ap.add_argument("--base-url",    default=BASE_URL, metavar="URL",
+                    help=f"vLLM base URL (default: {BASE_URL})")
+    ap.add_argument("--model",       default=MODEL, metavar="MODEL_ID",
+                    help=f"model ID sent in requests (default: {MODEL})")
     ap.add_argument("--reps",        type=int, default=3,
                     help="repetitions per single-stream scenario (default 3)")
     ap.add_argument("--concurrency", type=int, nargs="+", default=[1, 2, 4, 8],
@@ -185,8 +194,10 @@ def main():
     ap.add_argument("--skip-conc",   action="store_true",
                     help="skip concurrent suite")
     args = ap.parse_args()
+    _base_url = args.base_url
+    _model    = args.model
 
-    print(f"Target: {BASE_URL}  model: {MODEL}")
+    print(f"Target: {_base_url}  model: {_model}")
     if not check_alive():
         sys.exit(1)
 
