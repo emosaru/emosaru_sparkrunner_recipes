@@ -78,7 +78,8 @@ def build_calibration_loader(tokenizer, *, dataset: str, n_samples: int, seq_len
     from datasets import load_dataset
 
     log.info("Loading calibration dataset %s (%d samples, max_len=%d)", dataset, n_samples, seq_len)
-    ds = load_dataset(dataset, split=f"train[:{n_samples}]", trust_remote_code=True)
+    # neuralmagic/calibration requires 'LLM' config; trust_remote_code removed in datasets 3+
+    ds = load_dataset(dataset, "LLM", split=f"train[:{n_samples}]")
 
     def forward_loop(model):
         model.eval()
