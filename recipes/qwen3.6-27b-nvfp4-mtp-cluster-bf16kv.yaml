@@ -5,7 +5,7 @@ builder: eugr
 min_nodes: 2
 container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
 metadata:
-  description: "Qwen3.6-27B NVFP4 (EmoSaru quant) with MTP — 2-Spark cluster (tp=2). Apples-to-apples with fp8-mtp-cluster at util=0.32, 256k context. Benchmark: 23.4 tok/s single-stream, 128 tok/s @c=8."
+  description: "BF16 KV test — FLASH_ATTN_DIFFKV backend to probe FULL_AND_PIECEWISE CUDA graph ceiling. Util 0.60 (54 GB KV headroom/node vs 0.32 fp8 baseline). Benchmark this against cluster-fp8kv to measure FULL_AND_PIECEWISE uplift."
 mods:
 - mods/fix-nvfp4-mtp-weights
 - mods/fix-qwen3-coder-next
@@ -15,22 +15,19 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 2
   pipeline_parallel: 1
-  # Same budget as fp8-mtp recipe (0.32 × 121 GB ≈ 39 GB/node) for apples-to-apples
-  # comparison. NVFP4 weights are ~2× smaller than FP8 so KV headroom is larger;
-  # util could be raised without OOM, but keep fixed to isolate quant format effect.
-  gpu_memory_utilization: 0.32
+  # 0.85 * 121 GB = 102.85 GB/node; model ~18.8 GB/node leaves ~84 GB KV for BF16.
+  gpu_memory_utilization: 0.85
   max_model_len: 262144
   max_num_batched_tokens: 32768
   load_format: fastsafetensors
-  kv_cache_dtype: fp8
-  attention_backend: flashinfer
+  # BF16 KV (auto) — allows FLASH_ATTN_DIFFKV which supports FULL_AND_PIECEWISE
+  # CUDA graph mode vs flashinfer's forced PIECEWISE with spec-decode.
+  kv_cache_dtype: auto
+  attention_backend: FLASH_ATTN
   tool_call_parser: qwen3_xml
   reasoning_parser: qwen3
-  # NVFP4 MTP head supports 3 spec tokens (vs 2 for FP8 recipe)
   speculative_config: '{"method": "mtp", "num_speculative_tokens": 3}'
 env:
-  # SM 121a (GB10 Superchip) — disable SM100-specific NVFP4 kernels that
-  # target B100/B200 die; they fail or produce wrong results on the Superchip die.
   ENABLE_NVFP4_SM100: '0'
   VLLM_MARLIN_USE_ATOMIC_ADD: '1'
   NCCL_CUMEM_ENABLE: '1'
