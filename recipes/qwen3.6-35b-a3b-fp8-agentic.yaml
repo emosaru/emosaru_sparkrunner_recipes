@@ -8,6 +8,7 @@ metadata:
 mods:
 - mods/fix-qwen3-coder-next
 - mods/vllm-tune
+- mods/fix-qwen3.6-chat-template
 defaults:
   port: 8000
   host: 0.0.0.0
@@ -28,7 +29,7 @@ defaults:
   load_format: fastsafetensors
   kv_cache_dtype: fp8
   attention_backend: flashinfer
-  tool_call_parser: qwen3_coder
+  tool_call_parser: qwen3_xml
   reasoning_parser: qwen3
 env:
   VLLM_MARLIN_USE_ATOMIC_ADD: '1'
@@ -47,6 +48,6 @@ command: |
     --attention-backend {attention_backend} \
     --enable-prefix-caching \
     --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
-    --default-chat-template-kwargs '{"preserve_thinking": true}' \
+    --chat-template fixed_chat_template.jinja \
     -tp {tensor_parallel} \
     -pp {pipeline_parallel}

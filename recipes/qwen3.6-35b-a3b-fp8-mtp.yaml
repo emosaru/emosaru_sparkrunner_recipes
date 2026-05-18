@@ -8,7 +8,7 @@ metadata:
   description: "Qwen3.6-35B-A3B-FP8 with MTP — 2-Spark cluster (tp=2), budgeted as a co-tenant in the unified stack at full 256k context (~29 GB/node = util 0.24). Shared by agentic-coding (sonnet/haiku role) and llm-support-bot (main LLM). Adapted from upstream @official/qwen3.6-35b-a3b-fp8-mtp-vllm (tp 1→2)."
 mods:
 - mods/fix-qwen3-coder-next
-- mods/fix-qwen3.5-chat-template
+- mods/fix-qwen3.6-chat-template
 defaults:
   port: 8000
   host: 0.0.0.0
@@ -25,7 +25,7 @@ defaults:
   load_format: instanttensor
   kv_cache_dtype: fp8
   attention_backend: flashinfer
-  tool_call_parser: qwen3_coder
+  tool_call_parser: qwen3_xml
   reasoning_parser: qwen3
   speculative_config: '{"method": "mtp", "num_speculative_tokens": 2}'
 env:
@@ -41,7 +41,7 @@ command: |
     --max-model-len {max_model_len} \
     --max-num-batched-tokens {max_num_batched_tokens} \
     --trust-remote-code \
-    --chat-template unsloth.jinja \
+    --chat-template fixed_chat_template.jinja \
     --gpu-memory-utilization {gpu_memory_utilization} \
     --enable-auto-tool-choice \
     --tool-call-parser {tool_call_parser} \

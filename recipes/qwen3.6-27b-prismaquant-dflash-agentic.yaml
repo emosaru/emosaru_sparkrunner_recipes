@@ -7,7 +7,7 @@ metadata:
   description: "Qwen3.6-27B-PrismaQuant-5.5bit + DFlash spec decode (k=5) — agentic-coding co-tenant"
 mods:
 - mods/fix-qwen3-coder-next
-- mods/fix-qwen3.5-chat-template
+- mods/fix-qwen3.6-chat-template
 # Variant of qwen3.6-27b-prismaquant-agentic.yaml that swaps MTP-3 for
 # DFlash drafting with the z-lab/Qwen3.6-27B-DFlash purpose-trained draft
 # model. Community reports ~+40-50% throughput over MTP on Qwen3.6 (per
@@ -42,7 +42,7 @@ defaults:
   max_num_seqs: 5
   load_format: fastsafetensors
   attention_backend: flashinfer
-  tool_call_parser: qwen3_coder
+  tool_call_parser: qwen3_xml
   reasoning_parser: qwen3
 env:
   VLLM_USE_V1: '1'
@@ -69,7 +69,7 @@ command: |
     --enable-prefix-caching \
     --enable-chunked-prefill \
     --speculative-config '{"method":"dflash","model":"z-lab/Qwen3.6-27B-DFlash","num_speculative_tokens":5}' \
-    --chat-template unsloth.jinja \
+    --chat-template fixed_chat_template.jinja \
     --default-chat-template-kwargs '{"preserve_thinking": true}' \
     --enable-auto-tool-choice \
     --tool-call-parser {tool_call_parser} \
