@@ -52,20 +52,21 @@ def build_quant_cfg() -> dict:
     import modelopt.torch.quantization as mtq
 
     cfg = copy.deepcopy(mtq.NVFP4_DEFAULT_CFG)
-    overrides = {
-        # Vision tower — keep multimodal capabilities
-        "*visual*":              {"enable": False},
-        "*model.visual*":        {"enable": False},
-        # MTP head — grafted back post-quantization in BF16
-        "*mtp*":                 {"enable": False},
-        # GatedDeltaNet / linear_attn — full-block conservative exclusion.
-        # conv1d causes recurrence drift on long context (correctness failure);
-        # full exclusion avoids vLLM loading-name mismatch bug on the matmul layers.
-        "*linear_attn*":         {"enable": False},
-        "*linear_attn.conv1d*":  {"enable": False},
-        "*mixer.conv1d*":        {"enable": False},
-    }
-    cfg["quant_cfg"] = {**cfg["quant_cfg"], **overrides}
+
+    # modelopt 0.44+ uses a list of rule dicts; append our additions at the end
+    # so they take precedence over any earlier enabling rules.
+    # Note: *linear_attn.conv1d* and *mixer.conv1d* are already in the defaults;
+    # we add the full *linear_attn* block for the conservative vLLM-safety reason.
+    extra_disabled = [
+        "*visual*",        # vision tower — keep multimodal capabilities
+        "*model.visual*",  # alternate vision tower prefix
+        "*mtp*",           # MTP head — grafted back post-quantization in BF16
+        "*linear_attn*",   # GatedDeltaNet full block — avoids vLLM in_proj_qkvz
+                           # naming bug that silently zeros layers (#40252)
+    ]
+    for pattern in extra_disabled:
+        cfg["quant_cfg"].append({"quantizer_name": pattern, "enable": False})
+
     return cfg
 
 
