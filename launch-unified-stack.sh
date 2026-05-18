@@ -25,10 +25,10 @@
 #     OS                        ~27 GB
 #     27B-MTP slice (TP=2)      ~39 GB
 #     35B-A3B-MTP slice (TP=2)  ~29 GB
-#     0.6B embedding            ~6 GB   (util 0.05, pinned here)
+#     0.6B embedding            ~8.5 GB (util 0.07, pinned here)
 #     ────────────────────────────────
-#     Claimed                   ~101 GB
-#     Budget for ComfyUI        ~20 GB  (down from ~25 GB pre-cluster)
+#     Claimed                   ~103.5 GB
+#     Budget for ComfyUI        ~17.5 GB (down from ~25 GB pre-cluster)
 #
 # Launch order matters: 27B is dense and has the largest CUDA-graph capture
 # spike — load it first while memory is still cold. 35B-A3B (MoE) is next.

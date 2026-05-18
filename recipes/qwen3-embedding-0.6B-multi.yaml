@@ -10,8 +10,11 @@ defaults:
   port: 8001
   host: 0.0.0.0
   tensor_parallel: 1
-  # ~6 GB instance: 0.6 GB weights + embedding cache + workspace.
-  gpu_memory_utilization: 0.05
+  # ~8.5 GB (util 0.07): weights ~1.2 GB + CUDA workspace ~2.5 GB + KV pool
+  # ~4.8 GB. The minimum vLLM KV cache at 32k context for this model
+  # (28 layers, 8 KV heads, head_dim 64, BF16) is ~1.8 GB/seq; util 0.05
+  # (~6 GB) left too little headroom after workspace. 0.07 resolves it.
+  gpu_memory_utilization: 0.07
   max_model_len: 32768
   load_format: instanttensor
 command: |-
