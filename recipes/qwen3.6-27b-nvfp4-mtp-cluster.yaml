@@ -1,6 +1,5 @@
 recipe_version: '2'
-# TODO: replace with HF Hub repo ID once checkpoint is pushed (e.g. emosaru/qwen3.6-27b-nvfp4-mtp)
-model: /home/mebell/code/emosaru_sparkrunner_recipes/quantize/output/qwen36-27b-nvfp4-mtp
+model: emosaru/Qwen3.6-27B-NVFP4-MTP
 runtime: vllm
 builder: eugr
 min_nodes: 2
