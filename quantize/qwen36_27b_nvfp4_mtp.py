@@ -32,8 +32,10 @@ Exclusion rationale
 """
 import argparse
 import copy
+import glob
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -100,27 +102,83 @@ def build_calibration_loader(tokenizer, *, dataset: str, n_samples: int, seq_len
 # MTP graft helpers
 # ---------------------------------------------------------------------------
 
-def extract_mtp_state_dict(model) -> dict:
+def extract_mtp_state_dict(model, model_id: str) -> dict:
     """
-    Pull MTP tensors from the loaded BF16 model before quantization modifies it.
-    Falls back to modelopt's load_mtp_weights() if available (modelopt >= 0.41).
+    Extract MTP tensors for grafting back after export.
+
+    Qwen3_5ForConditionalGeneration drops mtp.* keys during from_pretrained
+    because MTP is not part of its architecture definition — so neither
+    load_mtp_weights() nor model.state_dict() will find them. The reliable
+    path is to read them directly from the original safetensors shards.
     """
-    # Preferred: use modelopt's official helper
+    # 1. Try modelopt's official helper (modelopt >= 0.41, may return 0 tensors)
     try:
         from modelopt.torch.export.unified_export_hf import load_mtp_weights
         mtp_sd = load_mtp_weights(model)
         n = sum(len(v) for v in mtp_sd.values()) if isinstance(mtp_sd, dict) else len(mtp_sd)
-        log.info("MTP state dict extracted via load_mtp_weights (%d tensors)", n)
-        return mtp_sd
-    except ImportError:
+        if n > 0:
+            log.info("MTP state dict extracted via load_mtp_weights (%d tensors)", n)
+            return mtp_sd
+    except (ImportError, Exception):
         pass
 
-    # Fallback: manual extraction
+    # 2. Try model state dict (works if the model class retained MTP)
     mtp_sd = {k: v.clone().to(torch.bfloat16)
                for k, v in model.state_dict().items()
                if "mtp" in k.lower()}
-    log.info("MTP state dict extracted manually (%d tensors)", len(mtp_sd))
+    if mtp_sd:
+        log.info("MTP state dict extracted from model.state_dict (%d tensors)", len(mtp_sd))
+        return mtp_sd
+
+    # 3. Read directly from safetensors shards — the model class drops mtp.*
+    #    during from_pretrained, but the tensors are present in the files.
+    log.info("mtp.* not in model state_dict — reading directly from safetensors shards")
+    import safetensors.torch as st
+    from huggingface_hub import snapshot_download
+
+    local_path = snapshot_download(model_id, ignore_patterns=["*.bin"])
+    shards = sorted(glob.glob(os.path.join(local_path, "*.safetensors")))
+    mtp_sd = {}
+    for shard in shards:
+        with st.safe_open(shard, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                if key.startswith("mtp."):
+                    mtp_sd[key] = f.get_tensor(key).to(torch.bfloat16)
+
+    log.info("MTP state dict extracted from safetensors shards (%d tensors)", len(mtp_sd))
     return mtp_sd
+
+
+def graft_mtp_into_export(export_dir: Path, mtp_sd: dict) -> None:
+    """
+    Write MTP tensors into the exported checkpoint as a dedicated shard and
+    update model.safetensors.index.json to include them.
+
+    Used as a fallback when export_hf_checkpoint's extra_state_dict param
+    is unavailable or silently drops the tensors (modelopt + transformers>=5.0
+    experimental path).
+    """
+    import safetensors.torch as st
+
+    index_path = export_dir / "model.safetensors.index.json"
+    if not index_path.exists():
+        log.warning("No model.safetensors.index.json found — skipping MTP graft")
+        return
+
+    # Write a dedicated mtp shard
+    shard_name = "model-mtp.safetensors"
+    shard_path = export_dir / shard_name
+    st.save_file({k: v.contiguous() for k, v in mtp_sd.items()}, str(shard_path))
+    log.info("Wrote MTP shard: %s (%d tensors)", shard_name, len(mtp_sd))
+
+    # Update the index
+    with open(index_path) as f:
+        index = json.load(f)
+    for key in mtp_sd:
+        index["weight_map"][key] = shard_name
+    with open(index_path, "w") as f:
+        json.dump(index, f, indent=2)
+    log.info("Updated model.safetensors.index.json with mtp.* entries")
 
 
 # ---------------------------------------------------------------------------
@@ -230,13 +288,14 @@ def main():
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
-    # 2. Extract MTP before quantization (quantize() modifies model in-place)
-    mtp_state_dict = extract_mtp_state_dict(model)
+    # 2. Extract MTP before quantization (quantize() modifies model in-place).
+    #    Qwen3_5ForConditionalGeneration drops mtp.* during from_pretrained, so
+    #    extract_mtp_state_dict falls through to reading the safetensors shards directly.
+    mtp_state_dict = extract_mtp_state_dict(model, args.model)
     if not mtp_state_dict:
         log.error("MTP state dict is empty — verify model has MTP heads before continuing")
         sys.exit(1)
-    mtp_count = sum(len(v) for v in mtp_state_dict.values()) if isinstance(mtp_state_dict, dict) else len(mtp_state_dict)
-    log.info("Captured %d MTP tensors for graft", mtp_count)
+    log.info("Captured %d MTP tensors for graft", len(mtp_state_dict))
 
     # 3. Build quantization config
     quant_cfg = build_quant_cfg()
@@ -253,13 +312,35 @@ def main():
     mtq.quantize(model, quant_cfg, forward_loop=forward_loop)
     log.info("Quantization complete")
 
-    # 5. Export with MTP grafted back in BF16
-    log.info("Exporting to %s (with MTP graft) ...", export_dir)
-    export_hf_checkpoint(
-        model,
-        export_dir=str(export_dir),
-        extra_state_dict=mtp_state_dict,
-    )
+    # 5. Export. Try extra_state_dict first (modelopt >= 0.41); if the export
+    #    silently drops the MTP tensors (known issue with transformers >= 5.0),
+    #    graft them in manually as a dedicated shard afterwards.
+    log.info("Exporting to %s ...", export_dir)
+    try:
+        export_hf_checkpoint(
+            model,
+            export_dir=str(export_dir),
+            extra_state_dict=mtp_state_dict,
+        )
+    except TypeError:
+        # extra_state_dict not supported in this modelopt build
+        export_hf_checkpoint(model, export_dir=str(export_dir))
+
+    # Verify MTP made it in; graft manually if not
+    index_path = export_dir / "model.safetensors.index.json"
+    if index_path.exists():
+        with open(index_path) as f:
+            index = json.load(f)
+        mtp_present = any(k.startswith("mtp.") for k in index.get("weight_map", {}))
+    else:
+        mtp_present = False
+
+    if not mtp_present:
+        log.warning("MTP tensors missing from export — grafting manually")
+        graft_mtp_into_export(export_dir, mtp_state_dict)
+    else:
+        log.info("MTP tensors confirmed in export index")
+
     log.info("Export complete")
 
     # 6. Patch config.json with vLLM-compatible quantization_config.ignore list
