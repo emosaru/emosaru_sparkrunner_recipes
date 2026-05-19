@@ -14,7 +14,7 @@
 #   Node 1 — 192.168.1.236 (this machine: hermes + ad-hoc + classifier)
 #     OS                        ~27 GB
 #     Hermes agent              ~5 GB   (external, steady)
-#     27B-MTP slice (TP=2)      ~39 GB  (util 0.32, this node's half)
+#     27B-NVFP4-MTP slice (TP=2) ~39 GB  (util 0.32, this node's half)
 #     35B-A3B-MTP slice (TP=2)  ~29 GB  (util 0.24, this node's half)
 #     1.7B classifier           ~6 GB   (util 0.05, pinned here)
 #     ────────────────────────────────
@@ -23,7 +23,7 @@
 #
 #   Node 2 — 192.168.1.237 (ComfyUI host + embedding)
 #     OS                        ~27 GB
-#     27B-MTP slice (TP=2)      ~39 GB
+#     27B-NVFP4-MTP slice (TP=2) ~39 GB
 #     35B-A3B-MTP slice (TP=2)  ~29 GB
 #     0.6B embedding            ~8.5 GB (util 0.07, pinned here)
 #     ────────────────────────────────
@@ -59,10 +59,10 @@ wait_ready() {
   return 1
 }
 
-echo "▶ 27B-MTP (TP=2, both nodes, port 8003)…"
-sparkrun run "$REPO_DIR/recipes/qwen3.6-27b-fp8-mtp.yaml" \
+echo "▶ 27B-NVFP4-MTP (TP=2, both nodes, port 8003)…"
+sparkrun run "$REPO_DIR/recipes/qwen3.6-27b-nvfp4-mtp-cluster.yaml" \
   --hosts "$BOTH" --port 8003 --ensure --no-follow
-wait_ready "$NODE1" 8003 "27B-MTP" 1800
+wait_ready "$NODE1" 8003 "27B-NVFP4-MTP" 1800
 
 echo "▶ 35B-A3B-MTP (TP=2, both nodes, port 8000)…"
 sparkrun run "$REPO_DIR/recipes/qwen3.6-35b-a3b-fp8-mtp.yaml" \

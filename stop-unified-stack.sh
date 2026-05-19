@@ -20,7 +20,7 @@ stop_recipe() {
 stop_recipe "$REPO_DIR/recipes/qwen3-embedding-0.6B-multi.yaml"  "0.6B embedding"
 stop_recipe "$REPO_DIR/recipes/qwen3-1.7b-fp8-multi.yaml"        "1.7B classifier"
 stop_recipe "$REPO_DIR/recipes/qwen3.6-35b-a3b-fp8-mtp.yaml"     "35B-A3B-MTP"
-stop_recipe "$REPO_DIR/recipes/qwen3.6-27b-fp8-mtp.yaml"         "27B-MTP"
+stop_recipe "$REPO_DIR/recipes/qwen3.6-27b-nvfp4-mtp-cluster.yaml" "27B-NVFP4-MTP"
 
 echo
 echo "✓ unified stack stopped. Cluster state:"
