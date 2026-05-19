@@ -1,11 +1,10 @@
 recipe_version: '2'
 model: emosaru/Qwen3.6-27B-NVFP4-MTP
 runtime: vllm
-builder: eugr
 min_nodes: 2
-container: sparkrun-eugr-vllm-fullcg:latest
+container: sparkrun-emosaru-vllm:latest
 metadata:
-  description: "FULL_AND_PIECEWISE + FP8 KV — custom vLLM build with PR #41127 (FlashInfer UNIFORM_BATCH for spec-decode). Benchmark: ~30.8 tok/s avg single-stream, 181 tok/s @c=8 vs FP8 PIECEWISE baseline (23.4/128). Matches BF16-KV/FULL_AND_PIECEWISE (31/176) at half the KV cache memory."
+  description: "FULL_AND_PIECEWISE + FP8 KV. emosaru custom vLLM fork (vLLM 0fa888465 + PR #41127 complete). Benchmark: ~30.8 tok/s avg single-stream, 181 tok/s @c=8. Rebuild: cd ~/code/spark-vllm-docker && ./build-and-copy.sh -t sparkrun-emosaru-vllm:latest --vllm-ref 0fa888465 --copy-to 192.168.1.237"
 mods:
 - mods/fix-nvfp4-mtp-weights
 - mods/fix-qwen3-coder-next
