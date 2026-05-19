@@ -5,7 +5,7 @@ builder: eugr
 min_nodes: 2
 container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
 metadata:
-  description: "Qwen3.6-35B-A3B-FP8 with MTP — 2-Spark cluster (tp=2), budgeted as a co-tenant in the unified stack at full 256k context (~29 GB/node = util 0.24). Shared by agentic-coding (sonnet/haiku role) and llm-support-bot (main LLM). Adapted from upstream @official/qwen3.6-35b-a3b-fp8-mtp-vllm (tp 1→2)."
+  description: "Qwen3.6-35B-A3B-FP8 with MTP — 2-Spark cluster (tp=2), util 0.24, 128k context. Shared by agentic-coding (sonnet/haiku role) and llm-support-bot (main LLM). 256k KV allocation failed at cluster co-tenant budget; trimmed to 128k."
 mods:
 - mods/fix-qwen3-coder-next
 - mods/fix-qwen3.6-chat-template
@@ -20,7 +20,7 @@ defaults:
   # 24 KB/token/node → 262144 ctx ≈ 6.3 GB/node KV for one full-context seq.
   # Weights ~17.5 GB/node + workspace ~5 GB + KV pool ~6.5 GB ≈ ~29 GB/node.
   gpu_memory_utilization: 0.24
-  max_model_len: 262144
+  max_model_len: 131072
   max_num_batched_tokens: 32768
   load_format: instanttensor
   kv_cache_dtype: fp8
