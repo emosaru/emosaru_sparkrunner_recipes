@@ -15,7 +15,7 @@
 #     OS                        ~27 GB
 #     Hermes agent              ~5 GB   (external, steady)
 #     27B-NVFP4-MTP slice (TP=2) ~39 GB  (util 0.32, this node's half)
-#     35B-A3B-MTP slice (TP=2)  ~29 GB  (util 0.24, this node's half, 128k ctx)
+#     35B-A3B-MTP slice (TP=2)  ~31.5 GB  (util 0.26, this node's half, 128k ctx)
 #     1.7B classifier           ~6 GB   (util 0.05, pinned here)
 #     ────────────────────────────────
 #     Claimed                   ~106 GB

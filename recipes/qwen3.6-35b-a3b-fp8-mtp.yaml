@@ -5,7 +5,7 @@ builder: eugr
 min_nodes: 2
 container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
 metadata:
-  description: "Qwen3.6-35B-A3B-FP8 with MTP — 2-Spark cluster (tp=2), util 0.24, 128k context. Shared by agentic-coding (sonnet/haiku role) and llm-support-bot (main LLM). 256k KV allocation failed at cluster co-tenant budget; trimmed to 128k."
+  description: "Qwen3.6-35B-A3B-FP8 with MTP — 2-Spark cluster (tp=2), util 0.26, 128k context. Shared by agentic-coding (sonnet/haiku role) and llm-support-bot (main LLM). 256k KV alloc failed at co-tenant budget. CUDA graph profiler (new in vLLM v0.21.0) consumed 1.09 GiB making 0.24 negative; disabled profiler and raised to 0.26 for ~3 GB KV headroom."
 mods:
 - mods/fix-qwen3-coder-next
 - mods/fix-qwen3.6-chat-template
@@ -14,12 +14,12 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 2
   pipeline_parallel: 1
-  # Unified-stack co-tenant budget at FULL 256k context: 0.24 × 121 GB ≈ 29 GB/node.
-  # 35B-A3B MoE (~3B active) is much lighter on KV than dense 27B: 4 KV heads ×
-  # 48 layers ≈ 48 KB/token FP8 KV; under TP=2 each node holds 2 KV heads ≈
-  # 24 KB/token/node → 262144 ctx ≈ 6.3 GB/node KV for one full-context seq.
-  # Weights ~17.5 GB/node + workspace ~5 GB + KV pool ~6.5 GB ≈ ~29 GB/node.
-  gpu_memory_utilization: 0.24
+  # 0.26 × 121 GB ≈ 31.5 GB/node. Non-graph overhead (weights + workspace) measured
+  # at 28.42 GB/node; leaves ~3.1 GB for KV cache at block_size=2128 (~144 blocks,
+  # ~2.3× max_model_len capacity). Raised from 0.24: vLLM v0.21.0 CUDA graph profiler
+  # consumed 1.09 GB upfront making 0.24 produce -0.47 GB KV. Profiler disabled via
+  # VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0; 0.26 gives comfortable headroom.
+  gpu_memory_utilization: 0.26
   max_model_len: 131072
   max_num_batched_tokens: 32768
   load_format: instanttensor
@@ -30,6 +30,9 @@ defaults:
   speculative_config: '{"method": "mtp", "num_speculative_tokens": 2}'
 env:
   VLLM_MARLIN_USE_ATOMIC_ADD: '1'
+  # vLLM v0.21.0 enabled CUDA graph memory profiling by default, consuming 1.09 GiB
+  # upfront that broke KV allocation at util=0.24. Disable it; graphs still capture.
+  VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: '0'
   # re-enable CUDA memory pooling for NCCL (image default is 0)
   NCCL_CUMEM_ENABLE: '1'
   # remove 1GbE (enP7s7) from NCCL's socket fallback list; keep both 200Gb/s RoCE NICs
