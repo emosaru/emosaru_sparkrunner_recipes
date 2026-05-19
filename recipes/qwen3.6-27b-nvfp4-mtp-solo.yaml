@@ -2,7 +2,7 @@ recipe_version: '2'
 model: emosaru/Qwen3.6-27B-NVFP4-MTP
 runtime: vllm
 builder: eugr
-container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
+container: sparkrun-emosaru-vllm:latest
 metadata:
   description: "Qwen3.6-27B NVFP4-MTP — single node (tp=1). Apples-to-apples vs cluster recipe; util raised to 0.45 (tp=1 carries full model weights vs 0.32/node at tp=2). Benchmark: ~17.6 tok/s single-stream, 103.7 tok/s @c=8."
 mods:

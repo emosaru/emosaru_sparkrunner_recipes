@@ -1,11 +1,10 @@
 recipe_version: '2'
 model: emosaru/Qwen3.6-27B-NVFP4-MTP
 runtime: vllm
-builder: eugr
 min_nodes: 2
-container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
+container: sparkrun-emosaru-vllm:latest
 metadata:
-  description: "Qwen3.6-27B NVFP4 (EmoSaru quant) with MTP — 2-Spark cluster (tp=2). Apples-to-apples with fp8-mtp-cluster at util=0.32, 256k context. Benchmark: 23.4 tok/s single-stream, 128 tok/s @c=8."
+  description: "FULL_AND_PIECEWISE + FP8 KV. emosaru custom vLLM fork (vLLM 0fa888465 + PR #41127 complete). Benchmark: ~30.8 tok/s avg single-stream, 181 tok/s @c=8. Rebuild: cd ~/code/spark-vllm-docker && ./build-and-copy.sh -t sparkrun-emosaru-vllm:latest --vllm-ref 0fa888465 --copy-to 192.168.1.237"
 mods:
 - mods/fix-nvfp4-mtp-weights
 - mods/fix-qwen3-coder-next
@@ -15,9 +14,6 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 2
   pipeline_parallel: 1
-  # Same budget as fp8-mtp recipe (0.32 × 121 GB ≈ 39 GB/node) for apples-to-apples
-  # comparison. NVFP4 weights are ~2× smaller than FP8 so KV headroom is larger;
-  # util could be raised without OOM, but keep fixed to isolate quant format effect.
   gpu_memory_utilization: 0.32
   max_model_len: 262144
   max_num_batched_tokens: 32768
@@ -26,11 +22,8 @@ defaults:
   attention_backend: flashinfer
   tool_call_parser: qwen3_xml
   reasoning_parser: qwen3
-  # NVFP4 MTP head supports 3 spec tokens (vs 2 for FP8 recipe)
   speculative_config: '{"method": "mtp", "num_speculative_tokens": 3}'
 env:
-  # SM 121a (GB10 Superchip) — disable SM100-specific NVFP4 kernels that
-  # target B100/B200 die; they fail or produce wrong results on the Superchip die.
   ENABLE_NVFP4_SM100: '0'
   VLLM_MARLIN_USE_ATOMIC_ADD: '1'
   NCCL_CUMEM_ENABLE: '1'
