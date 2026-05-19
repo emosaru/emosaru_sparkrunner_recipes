@@ -59,24 +59,32 @@ wait_ready() {
   return 1
 }
 
+# Mount the host vLLM cache so torch.compile/Inductor and FlashInfer JIT results
+# survive container restarts. The same path exists on both nodes.
+VLLM_CACHE_MOUNT="-v /home/mebell/.cache/vllm:/tmp/.cache/vllm"
+
 echo "▶ 27B-NVFP4-MTP (TP=2, both nodes, port 8003)…"
 sparkrun run "$REPO_DIR/recipes/qwen3.6-27b-nvfp4-mtp-cluster.yaml" \
-  --hosts "$BOTH" --port 8003 --ensure --no-follow
+  --hosts "$BOTH" --port 8003 --ensure --no-follow \
+  --executor-args "$VLLM_CACHE_MOUNT"
 wait_ready "$NODE1" 8003 "27B-NVFP4-MTP" 1800
 
 echo "▶ 35B-A3B-MTP (TP=2, both nodes, port 8000)…"
 sparkrun run "$REPO_DIR/recipes/qwen3.6-35b-a3b-fp8-mtp.yaml" \
-  --hosts "$BOTH" --port 8000 --ensure --no-follow
+  --hosts "$BOTH" --port 8000 --ensure --no-follow \
+  --executor-args "$VLLM_CACHE_MOUNT"
 wait_ready "$NODE1" 8000 "35B-A3B-MTP" 1800
 
 echo "▶ 1.7B classifier (pinned to $NODE1, port 8002)…"
 sparkrun run "$REPO_DIR/recipes/qwen3-1.7b-fp8-multi.yaml" \
-  --hosts "$NODE1" --port 8002 --ensure --no-follow
+  --hosts "$NODE1" --port 8002 --ensure --no-follow \
+  --executor-args "$VLLM_CACHE_MOUNT"
 wait_ready "$NODE1" 8002 "1.7B classifier" 900
 
 echo "▶ 0.6B embedding (pinned to $NODE2, port 8001)…"
 sparkrun run "$REPO_DIR/recipes/qwen3-embedding-0.6B-multi.yaml" \
-  --hosts "$NODE2" --port 8001 --ensure --no-follow
+  --hosts "$NODE2" --port 8001 --ensure --no-follow \
+  --executor-args "$VLLM_CACHE_MOUNT"
 wait_ready "$NODE2" 8001 "0.6B embedding" 600
 
 echo "▶ starting sparkrun proxy (LiteLLM, auto-discovers all 4 endpoints)…"
