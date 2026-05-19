@@ -1,0 +1,104 @@
+[
+  {
+    "endpoint": "27B-NVFP4-MTP",
+    "model_id": "emosaru/Qwen3.6-27B-NVFP4-MTP",
+    "runs": [
+      {
+        "concurrency": 1,
+        "n_requests": 20,
+        "wall_s": 152.8,
+        "total_out_tokens": 5120,
+        "throughput_tps": 33.5,
+        "avg_lat_s": 7.64,
+        "p50_lat_s": 7.52,
+        "p95_lat_s": 9.46,
+        "roce": {
+          "avg_gbps": 3.22,
+          "peak_gbps": 17.27
+        }
+      },
+      {
+        "concurrency": 8,
+        "n_requests": 64,
+        "wall_s": 86.94,
+        "total_out_tokens": 16384,
+        "throughput_tps": 188.4,
+        "avg_lat_s": 10.69,
+        "p50_lat_s": 10.43,
+        "p95_lat_s": 12.63,
+        "roce": {
+          "avg_gbps": 14.08,
+          "peak_gbps": 63.72
+        }
+      }
+    ]
+  },
+  {
+    "endpoint": "35B-A3B-FP8-MTP",
+    "model_id": "Qwen/Qwen3.6-35B-A3B-FP8",
+    "runs": [
+      {
+        "concurrency": 1,
+        "n_requests": 20,
+        "wall_s": 89.53,
+        "total_out_tokens": 5120,
+        "throughput_tps": 57.2,
+        "avg_lat_s": 4.48,
+        "p50_lat_s": 4.32,
+        "p95_lat_s": 7.81,
+        "roce": {
+          "avg_gbps": 2.12,
+          "peak_gbps": 6.11
+        }
+      },
+      {
+        "concurrency": 8,
+        "n_requests": 64,
+        "wall_s": 57.27,
+        "total_out_tokens": 16384,
+        "throughput_tps": 286.1,
+        "avg_lat_s": 7.09,
+        "p50_lat_s": 6.9,
+        "p95_lat_s": 8.73,
+        "roce": {
+          "avg_gbps": 8.46,
+          "peak_gbps": 20.0
+        }
+      }
+    ]
+  },
+  {
+    "endpoint": "1.7B-FP8",
+    "model_id": "Qwen/Qwen3-1.7B-FP8",
+    "runs": [
+      {
+        "concurrency": 1,
+        "n_requests": 20,
+        "wall_s": 59.4,
+        "total_out_tokens": 5120,
+        "throughput_tps": 86.2,
+        "avg_lat_s": 2.97,
+        "p50_lat_s": 2.95,
+        "p95_lat_s": 3.62,
+        "roce": {
+          "avg_gbps": 0.0,
+          "peak_gbps": 0.0
+        }
+      },
+      {
+        "concurrency": 8,
+        "n_requests": 64,
+        "wall_s": 21.68,
+        "total_out_tokens": 16384,
+        "throughput_tps": 755.6,
+        "avg_lat_s": 2.71,
+        "p50_lat_s": 2.7,
+        "p95_lat_s": 2.73,
+        "roce": {
+          "avg_gbps": 0.0,
+          "peak_gbps": 0.0
+        }
+      }
+    ]
+  }
+]
