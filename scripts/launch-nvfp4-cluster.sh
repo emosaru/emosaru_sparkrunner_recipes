@@ -50,7 +50,7 @@ VLLM_BASE_ARGS=(
     --quantization modelopt
     --gpu-memory-utilization 0.32
     --kv-cache-dtype fp8
-    --load-format safetensors
+    --load-format instanttensor
     --attention-backend flashinfer
     --enable-prefix-caching
     --enable-auto-tool-choice
@@ -92,7 +92,7 @@ docker run -d --name ${CONTAINER} \
     --max-model-len 262144 --max-num-batched-tokens 32768 \
     --trust-remote-code --quantization modelopt \
     --gpu-memory-utilization 0.32 --kv-cache-dtype fp8 \
-    --load-format safetensors --attention-backend flashinfer \
+    --load-format instanttensor --attention-backend flashinfer \
     --enable-prefix-caching --enable-auto-tool-choice \
     --tool-call-parser qwen3_xml --reasoning-parser qwen3 \
     --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \

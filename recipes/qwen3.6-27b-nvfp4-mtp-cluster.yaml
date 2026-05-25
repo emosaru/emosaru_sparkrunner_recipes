@@ -2,7 +2,7 @@ recipe_version: '2'
 model: emosaru/Qwen3.6-27B-NVFP4-MTP
 runtime: vllm
 min_nodes: 2
-container: sparkrun-emosaru-vllm:latest
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
 metadata:
   description: "FULL_AND_PIECEWISE + FP8 KV. emosaru custom vLLM fork (vLLM 0fa888465 + PR #41127 complete). Benchmark: ~30.8 tok/s avg single-stream, 181 tok/s @c=8. Rebuild: cd ~/code/spark-vllm-docker && ./build-and-copy.sh -t sparkrun-emosaru-vllm:latest --vllm-ref 0fa888465 --copy-to 192.168.1.237"
 mods:
@@ -16,8 +16,8 @@ defaults:
   pipeline_parallel: 1
   gpu_memory_utilization: 0.32
   max_model_len: 262144
-  max_num_batched_tokens: 32768
-  load_format: fastsafetensors
+  max_num_batched_tokens: 16384
+  load_format: instanttensor
   kv_cache_dtype: fp8
   attention_backend: flashinfer
   tool_call_parser: qwen3_xml
@@ -28,6 +28,9 @@ env:
   VLLM_MARLIN_USE_ATOMIC_ADD: '1'
   NCCL_CUMEM_ENABLE: '1'
   NCCL_SOCKET_IFNAME: 'enp1s0f0np0,enP2p1s0f0np0'
+  NCCL_TIMEOUT: '1800'
+  NCCL_SOCKET_NTHREADS: '4'
+  NCCL_NSOCKS_PERTHREAD: '2'
 
 command: |
   vllm serve {model} \

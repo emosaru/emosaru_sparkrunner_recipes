@@ -370,12 +370,16 @@ class Qwen3_5MTP(nn.Module, SupportsMultiModal):
 
         # Modelopt NVFP4 checkpoints exclude MTP layers from quantization via
         # "re:.*mtp.*" in config.json's ignore list, so those weights are BF16.
-        # vLLM's is_layer_excluded uses fnmatch (not regex), so "re:.*mtp.*"
-        # never matches the "mtp.layers.*" prefix. Add the correct glob so
-        # weight loading falls back to UnquantizedLinearMethod for MTP layers.
+        # However, hf_quant_config.json's exclude_modules (which is what vLLM
+        # reads into quant_config.exclude_modules) does NOT include any mtp
+        # pattern — only "model.language_model.layers.*" and "model.visual*".
+        # vLLM's is_layer_excluded also uses fnmatch (not regex), so the
+        # "re:.*mtp.*" in config.json's ignore list would never match anyway.
+        # Add the correct fnmatch glob unconditionally so get_quant_method
+        # returns UnquantizedLinearMethod / None for all MTP layers (both
+        # dense 27B gate_up_proj and MoE 35B RoutedExperts w13_weight).
         if (self.quant_config is not None
                 and hasattr(self.quant_config, 'exclude_modules')
-                and any('mtp' in p for p in self.quant_config.exclude_modules)
                 and 'mtp.*' not in self.quant_config.exclude_modules):
             self.quant_config.exclude_modules = (
                 list(self.quant_config.exclude_modules) + ['mtp', 'mtp.*']

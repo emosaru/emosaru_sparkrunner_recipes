@@ -2,7 +2,7 @@ recipe_version: '2'
 model: emosaru/Qwen3.6-27B-NVFP4-MTP
 runtime: vllm
 builder: eugr
-container: sparkrun-emosaru-vllm:latest
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
 metadata:
   description: "Qwen3.6-27B NVFP4-MTP — single node (tp=1). Apples-to-apples vs cluster recipe; util raised to 0.45 (tp=1 carries full model weights vs 0.32/node at tp=2). Benchmark: ~17.6 tok/s single-stream, 103.7 tok/s @c=8."
 mods:
@@ -20,7 +20,7 @@ defaults:
   gpu_memory_utilization: 0.45
   max_model_len: 262144
   max_num_batched_tokens: 32768
-  load_format: fastsafetensors
+  load_format: instanttensor
   kv_cache_dtype: fp8
   attention_backend: flashinfer
   tool_call_parser: qwen3_xml

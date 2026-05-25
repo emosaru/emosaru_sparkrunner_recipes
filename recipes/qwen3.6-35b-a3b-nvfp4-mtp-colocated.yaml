@@ -1,0 +1,58 @@
+recipe_version: '2'
+model: emosaru/Qwen3.6-35B-A3B-NVFP4-MTP
+runtime: vllm
+builder: eugr
+container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
+metadata:
+  description: "Qwen3.6-35B-A3B NVFP4-MTP — single-node co-located (tp=1), util 0.46, 256k context.
+    NVFP4 saves ~17.5 GB vs FP8 (~17.5 GB vs ~35 GB weights at TP=1), freeing budget for KV.
+    KV footprint is tiny: only 10/40 layers have KV cache (2 KV heads, head_dim=256, FP8),
+    so 256k context = ~2.7 GB KV. FP8 was limited to 64k by weight pressure, not KV size.
+    Node 1 budget: 121 - 27 (OS) - 38.7 (27B slice @ 0.32) = 55.3 GB → util 0.46.
+    If KV alloc fails at 262144, drop max_model_len to 131072."
+mods:
+- mods/fix-nvfp4-mtp-weights
+- mods/fix-qwen3.6-chat-template
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  pipeline_parallel: 1
+  # Node 1 budget: 121 - 27 (OS) - 38.7 (27B slice @ 0.32) = 55.3 GB → util 0.46.
+  # Weights (NVFP4): ~23.45 GB; KV pool: ~33.35 GB → sufficient for 256k.
+  # KV footprint: 10/40 KV layers, 2 KV heads, head_dim=256, FP8 → ~2.7 GB.
+  # If KV alloc fails at 262144, drop max_model_len to 131072.
+  gpu_memory_utilization: 0.46
+  max_model_len: 262144
+  max_num_batched_tokens: 16384
+  load_format: instanttensor
+  kv_cache_dtype: fp8
+  attention_backend: flashinfer
+  tool_call_parser: qwen3_xml
+  reasoning_parser: qwen3
+  speculative_config: '{"method": "mtp", "num_speculative_tokens": 2}'
+env:
+  ENABLE_NVFP4_SM100: '0'
+  VLLM_MARLIN_USE_ATOMIC_ADD: '1'
+  # Disable CUDA graph memory profiler — saves ~1 GB at this tight budget.
+  VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: '0'
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --trust-remote-code \
+    --quantization modelopt \
+    --chat-template fixed_chat_template.jinja \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser {tool_call_parser} \
+    --reasoning-parser {reasoning_parser} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --load-format {load_format} \
+    --attention-backend {attention_backend} \
+    --speculative-config '{speculative_config}' \
+    --enable-prefix-caching \
+    -tp {tensor_parallel} \
+    -pp {pipeline_parallel}
