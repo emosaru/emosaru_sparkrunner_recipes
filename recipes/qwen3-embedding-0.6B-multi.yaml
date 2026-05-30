@@ -1,9 +1,8 @@
 recipe_version: '2'
 model: Qwen/Qwen3-Embedding-0.6B
 runtime: vllm
-builder: eugr
 max_nodes: 1
-container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
 metadata:
   description: "Qwen3-Embedding-0.6B — multi-model co-tenant embedding variant"
 defaults:

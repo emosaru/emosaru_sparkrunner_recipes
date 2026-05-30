@@ -1,10 +1,10 @@
 recipe_version: '2'
 model: emosaru/Qwen3.6-35B-A3B-NVFP4-MTP
 runtime: vllm
-builder: eugr
-container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
 metadata:
   description: "Qwen3.6-35B-A3B NVFP4-MTP — single-node co-located (tp=1), util 0.46, 256k context.
+    emosaru custom vLLM fork (same container as 27B). Rebuild: cd ~/code/spark-vllm-docker && ./build-and-copy.sh -t sparkrun-emosaru-vllm:latest --vllm-ref 0fa888465 --copy-to 192.168.1.237
     NVFP4 saves ~17.5 GB vs FP8 (~17.5 GB vs ~35 GB weights at TP=1), freeing budget for KV.
     KV footprint is tiny: only 10/40 layers have KV cache (2 KV heads, head_dim=256, FP8),
     so 256k context = ~2.7 GB KV. FP8 was limited to 64k by weight pressure, not KV size.

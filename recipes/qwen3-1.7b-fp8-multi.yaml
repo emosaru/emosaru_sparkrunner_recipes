@@ -1,8 +1,7 @@
 recipe_version: '2'
 model: Qwen/Qwen3-1.7B-FP8
 runtime: vllm
-builder: eugr
-container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
 metadata:
   description: "Qwen3-1.7B-FP8 — multi-model co-tenant classifier variant (2k ctx, minimal footprint)"
 mods:
