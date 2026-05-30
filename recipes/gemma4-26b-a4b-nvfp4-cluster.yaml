@@ -1,0 +1,60 @@
+recipe_version: '2'
+model: Neural-ICE/Gemma-4-26B-A4B-it-NVFP4
+runtime: vllm-distributed
+builder: eugr
+min_nodes: 2
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
+metadata:
+  description: "Gemma 4 26B A4B MoE NVFP4 (Neural-ICE it variant) — TP=2 cluster, ray backend,
+    util 0.20, 128k context. Port 8000 (hermes main LLM).
+    Uses Gemma4-native parsers: tool_call_parser=gemma4, reasoning_parser=gemma4_reasoning_parser.
+    --moe-backend flashinfer_b12x: native SM 12.1 (Spark) path, excluded from auto-select
+    pending CUTLASS SM121 guard fix — must be set explicitly."
+mods:
+- mods/fix-gemma4-nvml-memory
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  pipeline_parallel: 1
+  # MoE weights at TP=2: ~6.5 GB/node. 0.20 × 121 = 24.2 GB total pool per node
+  # → ~17.7 GB KV headroom (FP8) → comfortable 128k context.
+  # Raise to 0.25 if more context or throughput is needed (adds ~6 GB/node).
+  gpu_memory_utilization: 0.20
+  max_model_len: 131072
+  max_num_batched_tokens: 16384
+  max_num_seqs: 4
+  load_format: instanttensor
+  kv_cache_dtype: fp8
+  tool_call_parser: gemma4
+  reasoning_parser: gemma4
+env:
+  ENABLE_NVFP4_SM100: '0'
+  VLLM_NVFP4_GEMM_BACKEND: 'marlin'
+  VLLM_MARLIN_USE_ATOMIC_ADD: '1'
+  NCCL_CUMEM_ENABLE: '1'
+  NCCL_SOCKET_IFNAME: 'enp1s0f0np0,enP2p1s0f0np0'
+  NCCL_TIMEOUT: '1800'
+  NCCL_SOCKET_NTHREADS: '4'
+  NCCL_NSOCKS_PERTHREAD: '2'
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --trust-remote-code \
+    --quantization modelopt \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser {tool_call_parser} \
+    --reasoning-parser {reasoning_parser} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --load-format {load_format} \
+    --enable-prefix-caching \
+    --moe-backend cutlass \
+    --generation-config vllm \
+    -tp {tensor_parallel} \
+    -pp {pipeline_parallel}

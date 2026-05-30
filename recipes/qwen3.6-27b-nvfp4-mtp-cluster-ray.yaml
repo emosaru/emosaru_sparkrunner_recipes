@@ -1,0 +1,61 @@
+recipe_version: '2'
+model: emosaru/Qwen3.6-27B-NVFP4-MTP
+runtime: vllm-distributed
+builder: eugr
+min_nodes: 2
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
+metadata:
+  description: "Qwen3.6-27B NVFP4-MTP — TP=2 cluster, ray backend. Functionally identical
+    to qwen3.6-27b-nvfp4-mtp-cluster.yaml (runtime: vllm) but uses vllm-distributed so
+    both this and gemma4-26b-a4b-nvfp4-cluster share the same ray cluster with isolated
+    NCCL process groups — avoids the communicator collision seen when two vllm (direct)
+    TP=2 instances share the same GPU pair. Port 8003 (opus role)."
+mods:
+- mods/fix-nvfp4-mtp-weights
+- mods/fix-qwen3-coder-next
+- mods/fix-qwen3.6-chat-template
+defaults:
+  port: 8003
+  host: 0.0.0.0
+  tensor_parallel: 2
+  pipeline_parallel: 1
+  gpu_memory_utilization: 0.32
+  max_model_len: 262144
+  max_num_batched_tokens: 16384
+  max_num_seqs: 16
+  load_format: instanttensor
+  kv_cache_dtype: fp8
+  attention_backend: flashinfer
+  tool_call_parser: qwen3_xml
+  reasoning_parser: qwen3
+  speculative_config: '{"method": "mtp", "num_speculative_tokens": 3}'
+env:
+  ENABLE_NVFP4_SM100: '0'
+  VLLM_MARLIN_USE_ATOMIC_ADD: '1'
+  NCCL_CUMEM_ENABLE: '1'
+  NCCL_SOCKET_IFNAME: 'enp1s0f0np0,enP2p1s0f0np0'
+  NCCL_TIMEOUT: '1800'
+  NCCL_SOCKET_NTHREADS: '4'
+  NCCL_NSOCKS_PERTHREAD: '2'
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --trust-remote-code \
+    --quantization modelopt \
+    --chat-template fixed_chat_template.jinja \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser {tool_call_parser} \
+    --reasoning-parser {reasoning_parser} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --load-format {load_format} \
+    --attention-backend {attention_backend} \
+    --speculative-config '{speculative_config}' \
+    --enable-prefix-caching \
+    -tp {tensor_parallel} \
+    -pp {pipeline_parallel}

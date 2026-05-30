@@ -1,0 +1,66 @@
+recipe_version: '2'
+model: emosaru/Qwen3.6-35B-A3B-NVFP4-MTP
+runtime: vllm-distributed
+builder: eugr
+min_nodes: 2
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
+metadata:
+  description: "Qwen3.6-35B-A3B NVFP4-MTP — TP=2 cluster, ray backend, util 0.32, 256k context.
+    Counterpart to qwen3.6-35b-a3b-nvfp4-mtp-colocated.yaml (TP=1 solo on node 1) but sharded
+    across both nodes via the ray backend so it can coexist with gemma4-26b-a4b-nvfp4-cluster
+    (TP=2) without NCCL process-group collision.
+    At TP=2: weights ~8.75 GB/node (from ~17.5 GB NVFP4 total). KV is tiny — only 10/40 layers
+    have KV cache (2 KV heads, head_dim=256, FP8 → ~1.3 GB/node at 256k context).
+    util 0.32 gives 38.7 GB/node pool; after weights and KV the slack is large — raise
+    util to 0.40 if you need more max_num_seqs throughput. Port 8003 (opus role)."
+mods:
+- mods/fix-nvfp4-mtp-weights
+- mods/fix-qwen3.6-chat-template
+defaults:
+  port: 8003
+  host: 0.0.0.0
+  tensor_parallel: 2
+  pipeline_parallel: 1
+  # TP=2: per-node pool = 0.32 × 121 = 38.7 GB; weights ~8.75 GB → ~30 GB KV/workspace.
+  # KV footprint is tiny (10/40 KV layers, 1 head/node at TP=2) — 256k context fits easily.
+  # Raise to 0.40 for more throughput headroom; node 0 can absorb it (~10.4 GB extra free).
+  gpu_memory_utilization: 0.32
+  max_model_len: 262144
+  max_num_batched_tokens: 16384
+  max_num_seqs: 16
+  load_format: instanttensor
+  kv_cache_dtype: fp8
+  attention_backend: flashinfer
+  tool_call_parser: qwen3_xml
+  reasoning_parser: qwen3
+  speculative_config: '{"method": "mtp", "num_speculative_tokens": 2}'
+env:
+  ENABLE_NVFP4_SM100: '0'
+  VLLM_MARLIN_USE_ATOMIC_ADD: '1'
+  NCCL_CUMEM_ENABLE: '1'
+  NCCL_SOCKET_IFNAME: 'enp1s0f0np0,enP2p1s0f0np0'
+  NCCL_TIMEOUT: '1800'
+  NCCL_SOCKET_NTHREADS: '4'
+  NCCL_NSOCKS_PERTHREAD: '2'
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --trust-remote-code \
+    --quantization modelopt \
+    --chat-template fixed_chat_template.jinja \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser {tool_call_parser} \
+    --reasoning-parser {reasoning_parser} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --load-format {load_format} \
+    --attention-backend {attention_backend} \
+    --speculative-config '{speculative_config}' \
+    --enable-prefix-caching \
+    -tp {tensor_parallel} \
+    -pp {pipeline_parallel}

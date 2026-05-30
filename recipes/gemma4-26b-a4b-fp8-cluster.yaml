@@ -1,0 +1,49 @@
+recipe_version: '2'
+model: google/gemma-4-26B-A4B-it
+runtime: vllm-distributed
+builder: eugr
+min_nodes: 2
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
+metadata:
+  description: "Gemma 4 26B A4B MoE FP8 (on-the-fly) — TP=2 cluster, ray backend, 128k context.
+    Based on eugr's vllm-ray recipe adapted for our cluster. FP8 quantization applied at load
+    from BF16 safetensors; avoids all NVFP4/Marlin/SM12.1 compatibility issues.
+    At TP=2 weights ~6.5 GB/node (FP8 MoE). util 0.40 gives 48.4 GB/node pool,
+    coexists with Qwen27B (util 0.32, 38.7 GB). Port 8000 (hermes main LLM).
+    Parsers: gemma4 tool-call + gemma4 reasoning (native Gemma4 format)."
+mods:
+- mods/fix-gemma4-nvml-memory
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  pipeline_parallel: 1
+  gpu_memory_utilization: 0.40
+  max_model_len: 131072
+  max_num_batched_tokens: 8192
+  max_num_seqs: 16
+env:
+  NCCL_CUMEM_ENABLE: '1'
+  NCCL_SOCKET_IFNAME: 'enp1s0f0np0,enP2p1s0f0np0'
+  NCCL_TIMEOUT: '1800'
+  NCCL_SOCKET_NTHREADS: '4'
+  NCCL_NSOCKS_PERTHREAD: '2'
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --load-format safetensors \
+    --quantization fp8 \
+    --kv-cache-dtype fp8 \
+    --enable-prefix-caching \
+    --enable-auto-tool-choice \
+    --tool-call-parser gemma4 \
+    --reasoning-parser gemma4 \
+    --trust-remote-code \
+    -tp {tensor_parallel} \
+    -pp {pipeline_parallel}
