@@ -19,6 +19,13 @@ metadata:
     with "Sparse Attention Indexer CUDA op requires DeepGEMM to be
     installed."
 
+    Phase-1 stability hardening (2026-07-09): cudagraph_mode pinned to
+    PIECEWISE (bare FULL_AND_PIECEWISE hangs ~6 requests in on SM12.x — the
+    V4 indexer declares UNIFORM_BATCH, violated by chunked prefill, vLLM
+    #40969) and Ray memory-monitor disabled (it reaps the engine under GB10
+    unified-memory pressure). Run host-prep-spark.sh on BOTH nodes before
+    launch for the unified-memory / earlyoom OOM class.
+
 defaults:
   port: 8000
   host: 0.0.0.0
@@ -35,11 +42,19 @@ defaults:
   tokenizer_mode: deepseek_v4
   speculative_config: '{"method": "mtp", "num_speculative_tokens": 2}'
   reasoning_config: '{"reasoning_parser": "deepseek_v4", "reasoning_start_str": "", "reasoning_end_str": ""}'
+  # Phase-1 stability: pin PIECEWISE cudagraphs (VLLM_USE_BREAKABLE_CUDAGRAPH=0 below keeps the
+  # host-staged cross-node all-reduce out of the graph — no GPUDirect on GB10, vLLM #46253). If
+  # PIECEWISE still capture-faults at capture_end, add `--enforce-eager` to the command as the
+  # guaranteed-stable floor (~55% slower decode) until Phase 3 moves to a validated graphed image.
+  compilation_config: '{"cudagraph_mode": "PIECEWISE"}'
 
 env:
   DG_JIT_USE_NVRTC: "0"
   VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
   VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+  # Phase-1 stability: stop Ray's memory monitor reaping the EngineCore on false-positive
+  # pressure readings against GB10 shared LPDDR5X. Required while distributed backend is ray.
+  RAY_memory_monitor_refresh_ms: "0"
   TILELANG_CLEANUP_TEMP_FILES: "1"
   VLLM_TRITON_MLA_SPARSE: "1"
   VLLM_TRITON_MLA_SPARSE_HEAD_BLOCK_SIZE: "4"
@@ -61,6 +76,7 @@ command: |
     --max-num-batched-tokens {max_num_batched_tokens} \
     --gpu-memory-utilization {gpu_memory_utilization} \
     --enable-prefix-caching \
+    --compilation-config '{compilation_config}' \
     --speculative-config '{speculative_config}' \
     --tokenizer-mode {tokenizer_mode} \
     --distributed-executor-backend ray \
