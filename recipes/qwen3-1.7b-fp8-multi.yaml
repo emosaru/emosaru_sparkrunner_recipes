@@ -3,7 +3,7 @@ model: Qwen/Qwen3-1.7B-FP8
 runtime: vllm
 container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
 metadata:
-  description: "Qwen3-1.7B-FP8 — multi-model co-tenant classifier variant (2k ctx, minimal footprint)"
+  description: "Qwen3-1.7B-FP8 — multi-model co-tenant variant (32k ctx, hindsight memory generation)"
 mods:
 - mods/fix-qwen3-coder-next
 - mods/fix-qwen3.5-chat-template
@@ -12,10 +12,10 @@ defaults:
   host: 0.0.0.0
   tensor_parallel: 1
   pipeline_parallel: 1
-  # ~6 GB instance: 1.7 GB weights + tiny KV (2k ctx) + workspace.
-  gpu_memory_utilization: 0.05
-  max_model_len: 2048
-  max_num_batched_tokens: 8192
+  # ~8.5 GB instance: 1.7 GB weights + ~1.75 GB KV (32k ctx FP8) + workspace.
+  gpu_memory_utilization: 0.07
+  max_model_len: 32768
+  max_num_batched_tokens: 32768
   load_format: instanttensor
   kv_cache_dtype: fp8
   attention_backend: flashinfer

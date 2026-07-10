@@ -1,0 +1,62 @@
+recipe_version: '2'
+model: openai/gpt-oss-120b
+runtime: vllm-distributed
+builder: eugr
+min_nodes: 2
+container: 192.168.1.236:5000/sparkrun-emosaru-vllm:latest
+metadata:
+  description: "gpt-oss-120b MXFP4 MoE — TP=2 cluster, ray backend, Eagle3 speculative
+    decoding, 128k context. Port 8001.
+    Model is native MXFP4 on MoE expert weights + BF16 attention; total weight
+    footprint ~60-70 GB, ~30-35 GB/node at TP=2. util 0.55 gives 66.6 GB/node
+    pool; after weights ~33 GB remains for FP8 KV at 128k context.
+    Speculative: Eagle3 draft (nvidia/gpt-oss-120b-Eagle3-v3, 0.8B BF16,
+    draft_tp=1) targets 7 tokens/step; acceptance ~1.7-2.5x by task category.
+    Prefix caching disabled — incompatible with Eagle3 in vLLM.
+    SM121 note: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1 routes MoE matmuls
+    through FlashInfer to avoid the SM80 Marlin fallback that produces null
+    content on first token (vllm#37030). Verify on first deploy; remove
+    speculative-config and check with a simple prompt if output is garbled.
+    Parsers: openai tool-call + gptoss reasoning (Harmony response format)."
+defaults:
+  port: 8001
+  host: 0.0.0.0
+  tensor_parallel: 2
+  pipeline_parallel: 1
+  # util 0.55: 66.6 GB/node pool. ~33 GB weights/node at TP=2 leaves ~33 GB
+  # for KV. Raise to 0.65 if 128k context KV alloc fails; drop max_model_len
+  # to 65536 if both nodes are constrained by other workloads.
+  gpu_memory_utilization: 0.55
+  max_model_len: 131072
+  max_num_batched_tokens: 8192
+  max_num_seqs: 16
+  kv_cache_dtype: fp8
+  tool_call_parser: openai
+  reasoning_parser: openai_gptoss
+  # speculative_config: '{"model": "nvidia/gpt-oss-120b-Eagle3-v3", "num_speculative_tokens": 7, "method": "eagle3", "draft_tensor_parallel_size": 1}'
+env:
+  # Route MXFP4 MoE matmuls through FlashInfer; avoids SM80 Marlin fallback
+  # that miscomputes first-token logits on SM121 (vllm#37030).
+  VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8: '1'
+  NCCL_CUMEM_ENABLE: '1'
+  NCCL_SOCKET_IFNAME: 'enp1s0f0np0,enP2p1s0f0np0'
+  NCCL_TIMEOUT: '1800'
+  NCCL_SOCKET_NTHREADS: '4'
+  NCCL_NSOCKS_PERTHREAD: '2'
+
+command: |
+  vllm serve {model} \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --trust-remote-code \
+    --quantization mxfp4 \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser {tool_call_parser} \
+    --reasoning-parser {reasoning_parser} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    -tp {tensor_parallel} \
+    -pp {pipeline_parallel}

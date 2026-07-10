@@ -6,33 +6,40 @@ min_nodes: 2
 
 metadata:
   description: >
-    DeepSeek-V4-Flash FP8 MTP — 2-node TP=2 cluster. Modified from
-    @experimental/deepseek4-flash-fp8-mtp-vllm to target ~4x max_model_len
-    (vs. upstream ~4.5x) by lowering gpu_memory_utilization 0.825 → 0.80.
-    Frees ~3 GB/node. Verify ratio from vLLM startup log:
-    "GPU blocks: N" × block_size / 256000 should be ≈4.
+    DeepSeek-V4-Flash FP8 MTP — 2-node TP=2 cluster, ray backend. Matches
+    eugr's deepseek-v4-flash recipe (sparse MLA/DeepGEMM experimental SM120
+    support), except: (1) the speculative-decode/MTP config is kept as a
+    pre-expanded JSON default — eugr's inline '{{"method":"mtp",
+    "num_speculative_tokens":{num_speculative_tokens}}}' template causes a
+    sparkrun startup error; (2) container stays pinned to
+    scitrera/dgx-spark-vllm-jasl-ds4:20260609 rather than eugr's vllm-node —
+    that build patches vLLM's sparse attention indexer with a Triton
+    fallback for SM120 (GB10), since DeepGEMM isn't available on this
+    hardware. The generic vllm-node tag lacks that patch and hard-crashes
+    with "Sparse Attention Indexer CUDA op requires DeepGEMM to be
+    installed."
 
 defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 2
-  pipeline_parallel: 1
-  data_parallel: 1
-  # Reduced from 0.825 to target ~4x max_model_len KV cache (vs upstream ~4.5x).
-  gpu_memory_utilization: 0.80
-  max_model_len: 256000
-  max_num_seqs: 10
-  max_num_batched_tokens: 6144
-  max_cudagraph_capture_size: 8
+  gpu_memory_utilization: 0.8
+  max_model_len: 500000
+  block_size: 256
+  max_num_seqs: 4
+  max_num_batched_tokens: 8192
   load_format: instanttensor
   kv_cache_dtype: fp8
   tool_call_parser: deepseek_v4
   reasoning_parser: deepseek_v4
   tokenizer_mode: deepseek_v4
   speculative_config: '{"method": "mtp", "num_speculative_tokens": 2}'
-  compilation_config: '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'
+  reasoning_config: '{"reasoning_parser": "deepseek_v4", "reasoning_start_str": "", "reasoning_end_str": ""}'
 
 env:
+  DG_JIT_USE_NVRTC: "0"
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
   TILELANG_CLEANUP_TEMP_FILES: "1"
   VLLM_TRITON_MLA_SPARSE: "1"
   VLLM_TRITON_MLA_SPARSE_HEAD_BLOCK_SIZE: "4"
@@ -41,25 +48,26 @@ env:
   VLLM_TRITON_MLA_SPARSE_QUERY_CHUNK_SIZE: "512"
   VLLM_TRITON_MLA_SPARSE_TOPK_CHUNK_SIZE: "512"
 
-# --attention_config.use_fp4_indexer_cache=True \
 command: |
   vllm serve {model} \
     --host {host} \
     --port {port} \
+    --trust-remote-code \
+    --tensor-parallel-size {tensor_parallel} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --block-size {block_size} \
     --max-model-len {max_model_len} \
     --max-num-seqs {max_num_seqs} \
     --max-num-batched-tokens {max_num_batched_tokens} \
-    --trust-remote-code \
     --gpu-memory-utilization {gpu_memory_utilization} \
-    --enable-auto-tool-choice \
-    --tool-call-parser {tool_call_parser} \
-    --tokenizer-mode {tokenizer_mode} \
-    --reasoning-parser {reasoning_parser} \
-    --kv-cache-dtype {kv_cache_dtype} \
-    --load-format {load_format} \
-    --speculative-config '{speculative_config}' \
-    --compilation-config '{compilation_config}' \
     --enable-prefix-caching \
-    --max-cudagraph-capture-size {max_cudagraph_capture_size} \
-    -tp {tensor_parallel} \
-    -pp {pipeline_parallel}
+    --speculative-config '{speculative_config}' \
+    --tokenizer-mode {tokenizer_mode} \
+    --distributed-executor-backend ray \
+    --tool-call-parser {tool_call_parser} \
+    --enable-auto-tool-choice \
+    --reasoning-parser {reasoning_parser} \
+    --reasoning-config '{reasoning_config}' \
+    --default-chat-template-kwargs.thinking=true \
+    --default-chat-template-kwargs.reasoning_effort=high \
+    --load-format {load_format}
