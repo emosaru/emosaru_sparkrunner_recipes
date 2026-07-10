@@ -30,8 +30,16 @@ defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 2
-  gpu_memory_utilization: 0.8
-  max_model_len: 500000
+  # Memory is tight: MEASURED non-KV footprint ~90.4 GiB of the 121.6 GiB pool (weights + MTP
+  # draft + sparse-MLA workspace), so KV gets only the remainder. Operating point tuned
+  # 2026-07-10 for 200k context, paired with host-prep vm.min_free_kbytes=3 GiB (down from 5):
+  #   util 0.77 = 93.7 GiB budget (fits ~95.8 GiB free, ~2 GiB startup margin) -> ~3.3 GiB KV;
+  #   a full 200k request needs ~2.1 GiB fp8 -> ~1.2 GiB concurrency headroom.
+  # NOTE: 500k needed util 0.8 + near-zero OS reserve (~1.7 GiB KV slack) = the fragile state
+  # that likely crashed under cron-burst load. Bigger context needs the Phase-3 mp backend
+  # (frees Ray overhead) or NVFP4 weights (frees ~35 GiB) — under evaluation.
+  gpu_memory_utilization: 0.77
+  max_model_len: 200000
   block_size: 256
   max_num_seqs: 4
   max_num_batched_tokens: 8192

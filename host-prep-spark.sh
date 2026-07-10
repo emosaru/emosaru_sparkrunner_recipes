@@ -15,7 +15,7 @@
 # /home/mebell/.claude/plans/deepseek-v4-flash-stability-plan.md (Phase 1).
 set -euo pipefail
 
-MIN_FREE_KB="${MIN_FREE_KB:-5242880}"        # 5 GiB protected reserve (lower to 3145728 = 3 GiB on tighter nodes)
+MIN_FREE_KB="${MIN_FREE_KB:-3145728}"        # 3 GiB protected reserve (DS-V4-Flash needs the headroom for KV; raise to 5242880=5 GiB if not memory-constrained)
 EXPECTED_DRIVER="${EXPECTED_DRIVER:-580.159.03}"   # node 0 as of 2026-07-09; BOTH nodes must match
 
 if [ "$(id -u)" -ne 0 ]; then
