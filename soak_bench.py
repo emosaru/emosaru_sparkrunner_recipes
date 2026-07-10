@@ -4,14 +4,18 @@ soak_bench.py — Phase-2 stability soak + performance/quality harness for the
 DeepSeek-V4-Flash 2x GB10 stability plan. Complements bench.py (which covers raw
 concurrency throughput); this adds the three things Phase 2 needs:
 
-  1. SOAK   — the go/no-go stability gate. Fires N sequential long-context requests
-              and detects the #40969 wedge (silent hang after ~6 requests: 100% SM,
-              zero decode, no exception). Distinguishes a per-request failure from a
-              WEDGED engine via a liveness probe + GPU-utilisation signature.
-  2. LATENCY— single-stream TTFT + decode tok/s (streaming), with a long-context
+  1. SOAK   — sequential stability gate. Fires N sequential long-context requests and
+              detects the #40969 wedge (silent hang after ~6 requests: 100% SM, zero
+              decode, no exception). Distinguishes a per-request failure from a WEDGED
+              engine via a liveness probe + GPU-utilisation signature.
+  2. STRESS — concurrency stability gate. Sustained concurrent bursts across a
+              concurrency ramp — models the Hermes cron-job load that historically
+              preceded day-scale crashes. Tracks min available unified RAM (the OOM /
+              KV-exhaustion signal), error types, and a post-burst liveness probe.
+  3. LATENCY— single-stream TTFT + decode tok/s (streaming), with a long-context
               "needle" correctness check (catches FP8-KV / sparse-MLA long-context
               regressions). This is the real prize-sizer for eager vs PIECEWISE vs FULL.
-  3. TOOLS  — tool-call reliability %. The bake-off discriminator: gpt-oss-120b emits
+  4. TOOLS  — tool-call reliability %. The bake-off discriminator: gpt-oss-120b emits
               invalid JSON here (~84% success); DS-V4-Flash / Qwen3-Coder should be ~100%.
 
 Doubles as the model bake-off: point --base-url at each endpoint and set --label.
@@ -112,15 +116,19 @@ _TOOL_REQUIRED = {"run_terminal_cmd": "command", "read_file": "path"}
 # GPU-utilisation sampler (local node) — corroborates the wedge signature
 # ---------------------------------------------------------------------------
 class GPUSampler:
-    """Samples utilization.gpu every 1s in the background (memory.used is N/A on GB10)."""
+    """Samples utilization.gpu + available RAM every 1s in the background. On GB10 the KV
+    cache lives in the same unified pool, so min available RAM is the OOM-proximity signal
+    (nvidia-smi memory.used is N/A here)."""
 
     def __init__(self):
-        self._samples: list[int] = []
+        self._util: list[int] = []
+        self._avail: list[int] = []   # GB available (local node)
         self._running = False
         self._task = None
 
     async def start(self):
-        self._samples.clear()
+        self._util.clear()
+        self._avail.clear()
         self._running = True
         self._task = asyncio.create_task(self._loop())
 
@@ -128,13 +136,15 @@ class GPUSampler:
         self._running = False
         if self._task:
             await self._task
-        if not self._samples:
-            return {"util_avg": None, "util_max": None, "n": 0}
+        if not self._util:
+            return {"util_avg": None, "util_max": None, "mem_avail_min": None, "n": 0}
         return {
-            "util_avg": round(statistics.mean(self._samples), 1),
-            "util_max": max(self._samples),
-            "util_last5": self._samples[-5:],
-            "n": len(self._samples),
+            "util_avg": round(statistics.mean(self._util), 1),
+            "util_max": max(self._util),
+            "util_last5": self._util[-5:],
+            "mem_avail_min": min(self._avail) if self._avail else None,
+            "mem_avail_last": self._avail[-1] if self._avail else None,
+            "n": len(self._util),
         }
 
     async def _loop(self):
@@ -147,9 +157,12 @@ class GPUSampler:
                 )
                 vals = [int(x) for x in out.stdout.split() if x.strip().isdigit()]
                 if vals:
-                    self._samples.append(max(vals))
+                    self._util.append(max(vals))
             except Exception:
                 pass
+            m = free_mem_gb()
+            if m.get("available") is not None:
+                self._avail.append(m["available"])
             await asyncio.sleep(1.0)
 
 
@@ -314,6 +327,81 @@ async def mode_soak(base, model, n, prompt_tokens, max_tokens, hang_timeout) -> 
     }
 
 
+async def mode_stress(base, model, levels, duration, max_tokens, hang_timeout, prompt_sizes) -> dict:
+    """Sustained concurrent bursts across a concurrency ramp — models the Hermes cron-job
+    load that historically preceded crashes. Keeps C requests in flight for `duration` s per
+    level, mixing prompt sizes (mixed prefill+decode batches), and watches for the OOM /
+    KV-exhaustion / wedge failure mode: tracks min available unified RAM, GPU util, error
+    types, and a post-burst liveness probe."""
+    print(f"\n── STRESS: concurrency ramp {levels}, {duration}s/level, "
+          f"prompt-size mix {prompt_sizes} tok ──", flush=True)
+    levels_out = []
+    async with httpx.AsyncClient() as client:
+        for C in levels:
+            print(f"\n  ▶ concurrency={C} sustained for {duration}s "
+                  f"(recipe max_num_seqs caps in-engine batch; excess queues)…", flush=True)
+            sampler = GPUSampler()
+            await sampler.start()
+            st = {"ok": 0, "fail": 0, "tokens": 0, "lat": [], "ttft": [], "errors": {}}
+            ctr = {"i": 0}
+            stop_at = time.monotonic() + duration
+
+            async def worker():
+                while time.monotonic() < stop_at:
+                    ctr["i"] += 1
+                    i = ctr["i"]
+                    ptok = prompt_sizes[i % len(prompt_sizes)]
+                    prompt, _ = build_prompt(ptok, nonce=_nonce(i))
+                    r = await stream_chat(client, base, model, prompt, max_tokens,
+                                          hang_timeout, extra={"ignore_eos": True})
+                    if r["ok"]:
+                        st["ok"] += 1
+                        st["tokens"] += r["tokens"]
+                        st["lat"].append(r["total_s"])
+                        if r["ttft_s"] is not None:
+                            st["ttft"].append(r["ttft_s"])
+                    else:
+                        st["fail"] += 1
+                        k = (r["error"] or "unknown").split(":")[0]
+                        st["errors"][k] = st["errors"].get(k, 0) + 1
+
+            w0 = time.monotonic()
+            await asyncio.gather(*[worker() for _ in range(C)])
+            wall = time.monotonic() - w0
+            res = await sampler.stop()
+            alive = await liveness_probe(client, base, model)
+            total = st["ok"] + st["fail"]
+            sr = round(100 * st["ok"] / total, 1) if total else 0.0
+            agg = round(st["tokens"] / wall, 1) if wall > 0 else 0.0
+            wedged = not alive
+            verdict = "WEDGED" if wedged else ("DEGRADED" if st["fail"] else "PASS")
+            p95 = (round(sorted(st["lat"])[int(len(st["lat"]) * 0.95)], 2)
+                   if len(st["lat"]) > 1 else None)
+            print(f"    → {verdict}: {st['ok']} ok / {st['fail']} fail ({sr}%), "
+                  f"{agg} tok/s aggregate, {total/wall:.2f} req/s", flush=True)
+            print(f"      min avail RAM {res.get('mem_avail_min')} GB, "
+                  f"gpu util avg {res.get('util_avg')}/max {res.get('util_max')}, "
+                  f"p95 lat {p95}s", flush=True)
+            if st["errors"]:
+                print(f"      errors: {st['errors']}", flush=True)
+            levels_out.append({
+                "concurrency": C, "verdict": verdict, "ok": st["ok"], "fail": st["fail"],
+                "success_pct": sr, "agg_tps": agg, "req_per_s": round(total / wall, 2),
+                "p50_lat": round(statistics.median(st["lat"]), 2) if st["lat"] else None,
+                "p95_lat": p95,
+                "ttft_p50": round(statistics.median(st["ttft"]), 2) if st["ttft"] else None,
+                "errors": st["errors"], "resources": res, "wedged": wedged,
+            })
+            if wedged:
+                print(f"  ⛔ ENGINE WEDGED at concurrency {C} — stopping ramp.", flush=True)
+                break
+    overall = ("WEDGED" if any(l["wedged"] for l in levels_out)
+               else "DEGRADED" if any(l["fail"] for l in levels_out) else "PASS")
+    print(f"  → STRESS overall: {overall}", flush=True)
+    return {"mode": "stress", "verdict": overall, "duration_s": duration,
+            "prompt_sizes": prompt_sizes, "levels": levels_out}
+
+
 async def mode_latency(base, model, prompt_tokens_list, max_tokens, timeout) -> dict:
     print(f"\n── LATENCY: single-stream TTFT + decode tok/s + needle check "
           f"@ contexts {prompt_tokens_list} ──", flush=True)
@@ -393,9 +481,15 @@ async def main():
     ap.add_argument("--model", help="model id (auto-discovered if omitted)")
     ap.add_argument("--label", default="run", help="tag for output file / comparisons")
     ap.add_argument("--mode", default="soak",
-                    choices=["soak", "latency", "tools", "all"])
+                    choices=["soak", "stress", "latency", "tools", "all"])
     ap.add_argument("--requests", type=int, default=24, help="soak: sequential requests (>6)")
     ap.add_argument("--prompt-tokens", type=int, default=4000, help="soak: approx prompt tokens")
+    ap.add_argument("--stress-levels", default="4,8,16",
+                    help="stress: concurrency ramp, comma-separated (models cron-burst load)")
+    ap.add_argument("--stress-duration", type=int, default=90,
+                    help="stress: seconds of sustained load per concurrency level")
+    ap.add_argument("--stress-sizes", default="500,4000,8000",
+                    help="stress: prompt-size mix in approx tokens, comma-separated")
     ap.add_argument("--latency-contexts", default="4000,16000,64000,128000",
                     help="latency: comma-separated approx context sizes")
     ap.add_argument("--max-tokens", type=int, default=256)
@@ -420,6 +514,11 @@ async def main():
     if args.mode in ("soak", "all"):
         report["results"]["soak"] = await mode_soak(
             base, model, args.requests, args.prompt_tokens, args.max_tokens, args.hang_timeout)
+    if args.mode in ("stress", "all"):
+        report["results"]["stress"] = await mode_stress(
+            base, model, [int(x) for x in args.stress_levels.split(",") if x.strip()],
+            args.stress_duration, args.max_tokens, args.hang_timeout,
+            [int(x) for x in args.stress_sizes.split(",") if x.strip()])
     if args.mode in ("latency", "all"):
         report["results"]["latency"] = await mode_latency(
             base, model, contexts, args.max_tokens, args.timeout)
@@ -434,13 +533,21 @@ async def main():
     out.write_text(json.dumps(report, indent=2))
     print(f"\n✓ results → {out}")
 
-    # One-line verdict banner for the soak gate
+    # Verdict banner for the stability gates
     s = report["results"].get("soak")
+    st = report["results"].get("stress")
+    lines = []
     if s:
-        print(f"\n{'='*56}\n  GATE [{args.label}]: SOAK {s['verdict']}  "
-              f"({s['ok_count']}/{s['requests']} ok"
-              + (f", wedged@{s['wedged_at']}" if s['wedged_at'] else "")
-              + f")\n{'='*56}")
+        lines.append(f"  SOAK   {s['verdict']:<8} ({s['ok_count']}/{s['requests']} ok"
+                     + (f", wedged@{s['wedged_at']}" if s['wedged_at'] else "") + ")")
+    if st:
+        worst = "; ".join(f"c{l['concurrency']}:{l['verdict']}" for l in st["levels"])
+        minmem = min((l["resources"].get("mem_avail_min")
+                      for l in st["levels"]
+                      if l["resources"].get("mem_avail_min") is not None), default=None)
+        lines.append(f"  STRESS {st['verdict']:<8} ({worst}; min avail RAM {minmem} GB)")
+    if lines:
+        print(f"\n{'='*60}\n  GATE [{args.label}]\n" + "\n".join(lines) + f"\n{'='*60}")
     return 0
 
 
