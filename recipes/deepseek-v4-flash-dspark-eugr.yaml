@@ -1,0 +1,132 @@
+# Recipe: DeepSeek-V4-Flash-DSpark — our port of eugr's PENDING PR #319
+#         https://github.com/eugr/spark-vllm-docker/pull/319
+#         (branch feat/deepseek-v4-flash-dspark -> main; NOT merged as of 2026-07-17)
+#
+# DSpark variant of recipes/deepseek4-flash-fp8-mtp-vllm.yaml: same model family,
+# speculation swapped from MTP to DSpark — a Markov multi-token speculation module
+# baked into the deepseek-ai/DeepSeek-V4-Flash-DSpark checkpoint (dspark_block_size
+# 5, target layers [40,41,42], markov_rank 256). eugr reports ~4 tokens mean accept
+# length / ~53 tok/s on code workloads.
+#
+# Format is eugr recipe_version "1" so eugr's run-recipe.py parses it natively; run
+# it by PATH through eugr's tooling via launch-deepseek-v4-flash-dspark-eugr.sh —
+# NOT via sparkrun. See memory/eugr_direct_container_workflow.md.
+#
+# ── TWO HARD PREREQUISITES (the launcher handles both) ───────────────────────────
+# 1. IMAGE: needs a `vllm-node` built from vLLM recent enough to carry the DSpark
+#    method (vLLM #46995). A stale/cached image dies at startup with
+#    "unknown speculative method 'dspark'". Rebuild: build-and-copy.sh --rebuild-vllm
+#    (launcher: REBUILD_VLLM=1). The DeepSeek-V4 cute-DSL/preset fixes needed to load
+#    on main (VLLM_PRESET_PRS 47392 47618) come with the main build automatically.
+# 2. MOD: mods/fix-dspark-sm120-topk must exist in the eugr checkout. It ships in
+#    PR #319 only, so the launcher fetches it out of the PR. Once #319 merges the
+#    fetch becomes a no-op and this note can go.
+#
+# ── WHY THE MOD (SM120 / DGX Spark GB10) ────────────────────────────────────────
+# The DSpark draft runs a sparse-MLA decode with topk=256, but FlashInfer's SM120
+# decode_dsv4 kernel only has compiled buckets {128,512,1024}. topk=256 falls in the
+# gap, the dispatcher falls through to the paged kernel, and warmup crashes on
+# `num_tokens > 64`. The mod rounds the draft's topk down to 128 before dispatch.
+# Correctness-safe: the draft is a speculator and the target model verifies every
+# proposed token, so this moves accept-length, never output. (The main model asks for
+# topk=128 and is unaffected.) Drop the mod on kernels that support topk=256.
+#
+# ── OUR DELTAS vs PR #319 (this cluster only — everything else is verbatim) ──────
+# * gpu_memory_utilization 0.85 — the PR's value, kept as-is. Note this is ABOVE the
+#   MTP sibling's 0.77: that recipe was tuned conservatively (util ~0.80+ was blamed
+#   for a cron-burst crash under the old jasl/Ray-overhead config), and the ~97 GiB
+#   free figure in memory/cluster_topology.md was measured with a desktop session +
+#   browser resident. 0.85 (≈103 GiB) is confirmed fine on this cluster (user,
+#   2026-07-17). Overridable from the launcher (GPU_MEM=…), so the memory decision
+#   stays in one place. On first launch still read the "GPU KV cache size" line —
+#   a full 200k fp8 request needs ~2.1 GiB of KV; if KV lands near that, lower
+#   max_model_len rather than climbing util further.
+# * RAY_memory_monitor_refresh_ms=0 — Ray's memory monitor reaps the EngineCore on
+#   false-positive pressure readings against GB10 shared LPDDR5X. Required on this
+#   hardware whenever the backend is ray (it is, below). Same as the MTP recipe.
+# * NOT ported from the MTP recipe: the jasl container pin and the
+#   VLLM_TRITON_MLA_SPARSE* env block. Those exist because that image patches the
+#   sparse-MLA indexer with a Triton fallback (no DeepGEMM on GB10). This recipe runs
+#   the stock image, whose SM120 sparse-MLA path is FlashInfer's — which is precisely
+#   what the topk mod above patches. Mixing the two would be wrong.
+# * NOT set: compilation_config cudagraph_mode PIECEWISE. The MTP recipe pins it
+#   (bare FULL_AND_PIECEWISE hangs ~6 requests in on SM12.x — the V4 indexer declares
+#   UNIFORM_BATCH, violated by chunked prefill, vLLM #40969). PR #319 does not set it
+#   and its numbers are from the unpinned config, so we match the PR to stay on the
+#   benchmarked path. If this hangs a handful of requests in, that is the #40969
+#   signature — add: compilation_config: '{"cudagraph_mode": "PIECEWISE"}' to defaults
+#   and the matching --compilation-config '{compilation_config}' to the command.
+#
+# Run host-prep-spark.sh on BOTH nodes before launch (unified-memory / earlyoom OOM
+# class), same as the MTP recipe.
+
+recipe_version: "1"
+name: DeepSeek-V4-Flash-DSpark-eugr
+description: deepseek-ai/DeepSeek-V4-Flash-DSpark (DSpark speculation, TP=2 Ray) on the stock eugr image — port of eugr PR #319
+
+# HuggingFace model to download (optional, for --download-model). ~167 GB.
+model: deepseek-ai/DeepSeek-V4-Flash-DSpark
+
+# Stock eugr image tag (built by ./build-and-copy.sh -> eugr/spark-vllm:latest -> vllm-node).
+# Must include vLLM #46995 — see prerequisite 1 above.
+container: vllm-node
+
+# Claims essentially the whole 2-Spark cluster; both nodes required.
+cluster_only: true
+
+# DSpark draft topk fix for SM120 — ships in eugr PR #319, fetched by the launcher.
+# Resolved relative to the eugr repo root, where mods live.
+mods:
+  - mods/fix-dspark-sm120-topk
+
+# Default settings (can be overridden via CLI). gpu_memory_utilization is the
+# per-node fraction of the ~121 GB unified pool and is overridable from the launcher
+# (GPU_MEM=…), so the memory decision stays in one place.
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  # PR #319's value. DSpark's persistent draft adds memory pressure the MTP recipe
+  # doesn't have; 0.85 / 200k loads the draft cleanly and sizes a healthy KV pool.
+  gpu_memory_utilization: 0.85
+  max_model_len: 200000
+  block_size: 256
+  max_num_seqs: 4
+  max_num_batched_tokens: 8192
+  # DSpark requires num_speculative_tokens >= dspark_block_size (5). Do not lower it.
+  # (Unlike MTP, where 2 is our validated optimum and 3 measurably regresses — see
+  # memory/dspark_evaluation.md.)
+  num_speculative_tokens: 5
+
+# Environment variables
+env:
+  DG_JIT_USE_NVRTC: "0"
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+  # Our delta — see header. Keeps Ray's memory monitor from reaping the EngineCore.
+  RAY_memory_monitor_refresh_ms: "0"
+
+# The vLLM serve command template
+command: |
+  vllm serve deepseek-ai/DeepSeek-V4-Flash-DSpark \
+      --host {host} \
+      --port {port} \
+      --trust-remote-code \
+      --tensor-parallel-size {tensor_parallel} \
+      --kv-cache-dtype fp8_ds_mla \
+      --block-size {block_size} \
+      --max-model-len {max_model_len} \
+      --max-num-seqs {max_num_seqs} \
+      --max-num-batched-tokens {max_num_batched_tokens} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --enable-prefix-caching \
+      --speculative-config '{{"method":"dspark","num_speculative_tokens":{num_speculative_tokens},"draft_sample_method":"probabilistic"}}' \
+      --tokenizer-mode deepseek_v4 \
+      --distributed-executor-backend ray \
+      --tool-call-parser deepseek_v4 \
+      --enable-auto-tool-choice \
+      --reasoning-parser deepseek_v4 \
+      --reasoning-config '{{"reasoning_parser":"deepseek_v4","reasoning_start_str":"","reasoning_end_str":""}}' \
+      --default-chat-template-kwargs.thinking=true \
+      --default-chat-template-kwargs.reasoning_effort=high \
+      --load-format instanttensor
