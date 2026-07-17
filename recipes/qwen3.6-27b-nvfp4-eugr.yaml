@@ -1,0 +1,75 @@
+# Recipe: Qwen3.6-27B-NVFP4-MTP (our custom quant) on the STOCK eugr image.
+#
+# Runs emosaru/Qwen3.6-27B-NVFP4-MTP through eugr's spark-vllm-docker tooling
+# using the stock `vllm-node` (eugr/spark-vllm) image directly — NOT the emosaru
+# fork image and NOT sparkrun. Format is eugr recipe_version "1" so eugr's
+# run-recipe.py parses it natively.
+#
+# Co-location: this recipe is one half of the dual-model cluster launched by
+# launch-qwen-dual-nvfp4-eugr.sh (its sibling is qwen3.6-35b-a3b-nvfp4-eugr.yaml).
+# gpu_memory_utilization below is a SOLO-sane default (0.8). Do NOT tune it here
+# for co-location — the launcher OVERRIDES it with --gpu-memory-utilization so the
+# split between the 35B and 27B is balanced in one place (the script).
+#
+# Qwen3.6-27B is a DENSE model (no MoE), so there is no --moe-backend flag.
+# The MTP-weights mod is omitted (stock image's vLLM no longer needs it); the only
+# mod kept is eugr's own qwen3.6 chat-template fix.
+
+recipe_version: "1"
+name: Qwen3.6-27B-NVFP4-MTP-eugr
+description: emosaru/Qwen3.6-27B-NVFP4-MTP on the stock eugr image (dense, MTP, TP=2 Ray)
+
+# HuggingFace model to download (optional, for --download-model)
+model: emosaru/Qwen3.6-27B-NVFP4-MTP
+
+# Stock eugr image tag (built by ./build-and-copy.sh -> eugr/spark-vllm:latest -> vllm-node)
+container: vllm-node
+
+# eugr-provided chat-template fix (drops fixed_chat_template.jinja into the container).
+# Resolved relative to the eugr repo root, where this mod lives.
+mods:
+  - mods/fix-qwen3.6-chat-template
+
+# Default settings (can be overridden via CLI). gpu_memory_utilization is the
+# per-node fraction of the 121 GB unified pool; 0.8 is a solo default and is
+# overridden by the co-location launcher.
+defaults:
+  port: 8003
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.8
+  max_model_len: 262144
+  max_num_seqs: 16
+  max_num_batched_tokens: 16384
+  # Single MTP head; n=3 is the validated stable maximum for these Qwen3.6 MTP
+  # quants (n>=4 crashes EngineCore at concurrency).
+  speculative_config: '{"method":"mtp","num_speculative_tokens":3}'
+
+# Environment variables
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: "1"
+  ENABLE_NVFP4_SM100: "0"
+
+# The vLLM serve command template
+command: |
+  vllm serve emosaru/Qwen3.6-27B-NVFP4-MTP \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --quantization modelopt \
+    --kv-cache-dtype fp8 \
+    --attention-backend flashinfer \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --speculative-config '{speculative_config}' \
+    --load-format fastsafetensors \
+    --chat-template fixed_chat_template.jinja \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice \
+    --distributed-executor-backend ray
