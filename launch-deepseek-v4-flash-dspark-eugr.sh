@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch DeepSeek-V4-Flash-DSpark — the DSpark-speculation variant of
+# Launch DeepSeek-V4-Flash-0731 with DSpark speculation — the DSpark variant of
 # launch-deepseek-v4-flash-eugr.sh — directly via eugr's spark-vllm-docker
 # tooling, NOT via sparkrun. See memory/eugr_direct_container_workflow.md.
 #
@@ -24,9 +24,12 @@
 #   docker run --rm --entrypoint bash vllm-node -c \
 #     'python3 -c "import inspect;from vllm.config.speculative import SpeculativeConfig as S;print(\"dspark\" in inspect.getsource(S))"'
 #
-# FIRST RUN NEEDS DOWNLOAD_MODEL=1. DSpark is a SEPARATE ~167 GB checkpoint from the
-# MTP one; checked 2026-07-17, neither node has it (both have plain DeepSeek-V4-Flash
-# only). Budget the download+distribute time before the first launch.
+# MODEL IS NOW THE SAME 0731 CHECKPOINT AS THE MTP RECIPE. The official 0731 build
+# bakes the DSpark module in (weight map byte-identical to the old standalone
+# -DSpark repo), so there is no longer a separate DSpark download: if you already
+# ran launch-deepseek-v4-flash-eugr.sh with DOWNLOAD_MODEL=1, 0731 is resident on
+# both nodes and this launches without DOWNLOAD_MODEL. Only pass DOWNLOAD_MODEL=1 if
+# 0731 has never been fetched on this cluster (~167 GB).
 #
 # DSpark is heavy and cluster_only: TP=2 across BOTH Sparks, util 0.85, 200k context —
 # it claims essentially the whole cluster on port 8000. STOP any other model first
@@ -40,14 +43,15 @@
 # strips the recipe's ray backend line in that mode.
 #
 # Usage:
-#   DOWNLOAD_MODEL=1 ./launch-deepseek-v4-flash-dspark-eugr.sh # FIRST RUN (checkpoint absent)
 #   ./launch-deepseek-v4-flash-dspark-eugr.sh                  # launch (daemon) + wait ready
+#                                                              # (0731 usually already resident from the MTP launch)
 #   REBUILD_VLLM=1 ./launch-deepseek-v4-flash-dspark-eugr.sh   # force-rebuild vLLM wheels first (needs #46995)
 #   REFRESH_IMAGE=1 ./launch-deepseek-v4-flash-dspark-eugr.sh  # rebuild+distribute image (no vLLM wheel rebuild)
-#   DOWNLOAD_MODEL=1 ./launch-deepseek-v4-flash-dspark-eugr.sh # hf-download (~167 GB) + distribute first
+#   DOWNLOAD_MODEL=1 ./launch-deepseek-v4-flash-dspark-eugr.sh # hf-download 0731 (~167 GB) ONLY if never fetched
 #   GPU_MEM=0.75 ./launch-deepseek-v4-flash-dspark-eugr.sh     # override the memory split
 #   PR_REFRESH=1 ./launch-deepseek-v4-flash-dspark-eugr.sh     # re-fetch the mod (PR moved / force update)
 #   RAY_FLAG=--no-ray ./launch-deepseek-v4-flash-dspark-eugr.sh
+#   ETH_IF=enP2p1s0 ./launch-deepseek-v4-flash-dspark-eugr.sh  # pin QSFP iface (NCCL/RoCE audit)
 #
 # Stop with: ./stop-deepseek-v4-flash-dspark-eugr.sh
 
@@ -56,7 +60,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EUGR_DIR="${EUGR_DIR:-$HOME/code/spark-vllm-docker-eugr}"
 RECIPE="${RECIPE:-$SCRIPT_DIR/recipes/deepseek-v4-flash-dspark-eugr.yaml}"
-MODEL="${MODEL:-deepseek-ai/DeepSeek-V4-Flash-DSpark}"
+MODEL="${MODEL:-deepseek-ai/DeepSeek-V4-Flash-0731}"
 HEAD="${HEAD:-192.168.1.236}"
 WORKER="${WORKER:-192.168.1.237}"
 NAME="${NAME:-vllm_dsv4_dspark}"       # distinct from the MTP instance's vllm_node
@@ -64,6 +68,8 @@ PORT="${PORT:-8000}"
 MASTER_PORT="${MASTER_PORT:-29503}"    # distinct Ray head port (qwen dual uses 29501/29502)
 GPU_MEM="${GPU_MEM:-}"                 # empty = use the recipe default (0.85, per PR #319)
 RAY_FLAG="${RAY_FLAG:---ray}"          # PR #319 pins the ray backend; see header
+ETH_IF="${ETH_IF:-}"                   # empty = eugr .env / auto-detect; set to pin QSFP (NCCL/RoCE)
+IB_IF="${IB_IF:-}"                     # empty = eugr .env / auto-detect
 READY_TIMEOUT="${READY_TIMEOUT:-1800}"
 
 # PR #319 — source of the recipe this launcher runs and of the SM120 mod below.
@@ -139,7 +145,7 @@ fi
 ensure_pr_mod
 
 echo
-echo "═══ DeepSeek-V4-Flash-DSpark (stock eugr image, port of PR #$PR_NUM) ═══"
+echo "═══ DeepSeek-V4-Flash-0731 + DSpark (stock eugr image, port of PR #$PR_NUM) ═══"
 echo "  recipe:    $RECIPE"
 echo "  model:     $MODEL"
 echo "  container: $NAME   port: $PORT   ray head: $MASTER_PORT"
@@ -150,9 +156,11 @@ echo
 # -d = daemon: run-recipe returns after start; we poll the endpoint below.
 launch_args=( "$RECIPE" $RAY_FLAG -d --name "$NAME" --port "$PORT" --master-port "$MASTER_PORT" )
 [[ -n "$GPU_MEM" ]] && launch_args+=( --gpu-memory-utilization "$GPU_MEM" )
+[[ -n "$ETH_IF" ]] && launch_args+=( --eth-if "$ETH_IF" )
+[[ -n "$IB_IF" ]] && launch_args+=( --ib-if "$IB_IF" )
 ./run-recipe.sh "${launch_args[@]}" "$@"
 
-wait_ready "$HEAD" "$PORT" "DeepSeek-V4-Flash-DSpark" "$READY_TIMEOUT"
+wait_ready "$HEAD" "$PORT" "DeepSeek-V4-Flash-0731 (DSpark)" "$READY_TIMEOUT"
 
 echo
 echo "✓ up. Endpoint: http://$HEAD:$PORT/v1"

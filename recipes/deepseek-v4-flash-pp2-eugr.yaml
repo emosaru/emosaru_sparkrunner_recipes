@@ -1,0 +1,79 @@
+# Recipe: DeepSeek-V4-Flash-0731 — PIPELINE-PARALLEL (PP=2), EXPERIMENTAL.
+#         Benchmark-only variant of recipes/deepseek-v4-flash-mtp-eugr.yaml for the
+#         C3 topology test. NOT a production recipe. Run by PATH through eugr tooling
+#         (RAY_FLAG=--ray is REQUIRED — cross-node pipeline stages need Ray).
+#
+# ── WHY THIS EXISTS ──────────────────────────────────────────────────────────────
+# StorageReview measured PP=2 ≈ 2.2x TP=2 at batch 128 over the ConnectX-7 link
+# (TP fires an all-reduce twice per layer; PP=2 hands off activations once per token,
+# which survives the 200GbE hop far better). BUT: (a) that was GPT-OSS-120B, not
+# V4-Flash — unproven for this model; (b) it is a BATCHED-throughput win and is
+# typically neutral/worse for single-stream. So this is a measurement, not a default:
+# run only soak_bench.py --mode stress against it and compare aggregate tok/s vs the
+# TP=2 MTP baseline. Keep single-stream traffic on the TP=2 recipe.
+#
+# ── KNOWN-FRAGILE COMBINATIONS (back off if warmup fails) ────────────────────────
+# * Spec-decode + pipeline-parallel can be unsupported/buggy. This recipe DISABLES
+#   speculation (no --speculative-config) to isolate the pure topology effect and
+#   avoid that interaction. Add it back only if you specifically want spec+PP numbers.
+# * PP wants microbatches to keep the pipeline full → max_num_seqs is raised to 16
+#   (vs 4 on the TP recipe). Bubbles at low concurrency are expected; that is the
+#   whole reason single-stream PP is uninteresting.
+# * If cross-node PP placement or capture crashes, this topology just isn't ready on
+#   this stack — record that and stay on TP=2. Do not sink time into forcing it.
+#
+# Same 0731 checkpoint as the other recipes — no extra download. Run host-prep-spark.sh
+# on both nodes first.
+
+recipe_version: "1"
+name: DeepSeek-V4-Flash-0731-PP2-experimental
+description: deepseek-ai/DeepSeek-V4-Flash-0731 pipeline-parallel PP=2 (benchmark-only) on the stock eugr image
+
+model: deepseek-ai/DeepSeek-V4-Flash-0731
+container: vllm-node
+cluster_only: true
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  # world_size = TP(1) * PP(2) = 2 → one pipeline stage per Spark.
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.8
+  max_model_len: 200000
+  block_size: 256
+  # Raised vs the TP recipe (4) so the pipeline stays fed — PP is a batched win.
+  max_num_seqs: 16
+  max_num_batched_tokens: 8192
+
+env:
+  DG_JIT_USE_NVRTC: "0"
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+  RAY_memory_monitor_refresh_ms: "0"
+
+# PP across two nodes needs the Ray executor — launch with RAY_FLAG=--ray.
+command: |
+  vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 \
+      --host {host} \
+      --port {port} \
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash deepseek-ai/DeepSeek-V4-Flash-0731 \
+      --trust-remote-code \
+      --tensor-parallel-size {tensor_parallel} \
+      --pipeline-parallel-size 2 \
+      --kv-cache-dtype fp8 \
+      --block-size {block_size} \
+      --max-model-len {max_model_len} \
+      --max-num-seqs {max_num_seqs} \
+      --max-num-batched-tokens {max_num_batched_tokens} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --enable-prefix-caching \
+      --tokenizer-mode deepseek_v4 \
+      --distributed-executor-backend ray \
+      --tool-call-parser deepseek_v4 \
+      --enable-auto-tool-choice \
+      --reasoning-parser deepseek_v4 \
+      --reasoning-config '{{"reasoning_parser":"deepseek_v4","reasoning_start_str":"","reasoning_end_str":""}}' \
+      --default-chat-template-kwargs.thinking=true \
+      --default-chat-template-kwargs.reasoning_effort=high \
+      --load-format instanttensor

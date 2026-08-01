@@ -1,0 +1,114 @@
+# Recipe: DeepSeek-V4-Flash-0731 — MTP speculation, TP=2 on the stock eugr image.
+#         Our local pin of eugr's built-in `deepseek-v4-flash` recipe, migrated to
+#         the OFFICIAL release. Run it by PATH through eugr's tooling via
+#         launch-deepseek-v4-flash-eugr.sh — NOT via sparkrun. See
+#         memory/eugr_direct_container_workflow.md.
+#
+# ── WHY A LOCAL COPY (not eugr's by-name recipe) ─────────────────────────────────
+# eugr's run-recipe.py has no --model override, and eugr's own recipes/deepseek-v4-
+# flash.yaml still hardcodes the PREVIEW id `deepseek-ai/DeepSeek-V4-Flash` in both
+# `model:` and the serve command. The official build is a DIFFERENT repo:
+# `deepseek-ai/DeepSeek-V4-Flash-0731` (released 2026-07-31). The bare id keeps
+# serving preview weights, so we pin 0731 here in our own repo rather than editing
+# (and having refresh clobber) the eugr checkout. Architecture/size are identical to
+# preview — 0731 was only re-post-trained (big agentic/coding gains) — so this is a
+# model-id swap, not a re-plumb.
+#
+# ── 0731 SHIPS THE DSpark MODULE (verified on HF) ────────────────────────────────
+# The 0731 checkpoint's weight map is byte-identical to the standalone
+# `-DSpark` repo (72,317 tensors / 48 shards / 166.9 GB) — it carries BOTH the base
+# `mtp.0.*` head used here AND the fuller multi-layer DSpark draft. So this ONE
+# ~167 GB download also feeds recipes/deepseek-v4-flash-dspark-eugr.yaml (which just
+# flips --speculative-config to method:dspark). No second checkpoint to download.
+#
+# ── CHAT TEMPLATE: nothing to add ────────────────────────────────────────────────
+# The official 0731 card ships NO Jinja chat template (only encoding/ Python
+# scripts). That is fine: with --tokenizer-mode deepseek_v4 (set below) vLLM's
+# built-in encoding applies automatically and the OpenAI endpoint works without the
+# helper scripts. Do NOT add --chat-template.
+#
+# ── VERIFY DRAFT ACTUALLY LOADS (vLLM #43456) ────────────────────────────────────
+# The DeepSeekV4MTP loader can SILENTLY skip a mis-keyed draft head → 0% acceptance,
+# no error, decode quietly at draft-off speed. On first launch scrape /metrics and
+# confirm vllm:spec_decode_num_accepted_tokens_total > 0 (vs …_num_draft_tokens_total)
+# — or read accept length off soak_bench.py. Treat 0 accepted as a FAILED launch.
+#
+# ── OUR DELTAS vs eugr's recipe (this cluster only) ──────────────────────────────
+# * model -> DeepSeek-V4-Flash-0731 (the whole point).
+# * RAY_memory_monitor_refresh_ms=0 — Ray's memory monitor reaps the EngineCore on
+#   false-positive pressure readings against GB10 shared LPDDR5X. Required whenever
+#   the backend is ray. Harmless under --no-ray (the launcher's default, which
+#   strips the ray backend line). Same delta the DSpark recipe carries.
+# * num_speculative_tokens kept at 2 — our validated MTP optimum on this cluster
+#   (memory/dspark_evaluation.md; eugr/upstream's 3 measurably regresses for us).
+#   Re-confirm in the 0731 A/B before changing.
+#
+# Backend: eugr documents DSV4F with --no-ray (PyTorch distributed), which also fits
+# full context better (+45% KV, ~2x RAM headroom; memory/deepseek_v4_backend_config.md).
+# The launcher defaults --no-ray and run-recipe strips the `--distributed-executor-
+# backend ray` line below in that mode.
+#
+# Run host-prep-spark.sh on BOTH nodes before launch (unified-memory / earlyoom).
+
+recipe_version: "1"
+name: DeepSeek-V4-Flash-0731-MTP
+description: deepseek-ai/DeepSeek-V4-Flash-0731 (official; MTP-2 speculation, TP=2) on the stock eugr image
+
+# HuggingFace model to download (optional, for --download-model). ~167 GB.
+# OFFICIAL release — NOT the bare `deepseek-ai/DeepSeek-V4-Flash` (that id is preview).
+model: deepseek-ai/DeepSeek-V4-Flash-0731
+
+# Stock eugr image tag (built by ./build-and-copy.sh -> eugr/spark-vllm:latest -> vllm-node).
+container: vllm-node
+
+# Can only be run in a cluster.
+cluster_only: true
+
+# No mods required (the MTP path needs no SM120 kernel patch; that's DSpark-only).
+mods: []
+
+# Default settings (can be overridden via CLI where supported).
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.8
+  max_model_len: 500000
+  block_size: 256
+  max_num_seqs: 4
+  max_num_batched_tokens: 8192
+  num_speculative_tokens: 2
+
+# Environment variables
+env:
+  DG_JIT_USE_NVRTC: "0"
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+  # Our delta — see header. Keeps Ray's memory monitor from reaping the EngineCore.
+  RAY_memory_monitor_refresh_ms: "0"
+
+# The vLLM serve command template
+command: |
+  vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 \
+      --host {host} \
+      --port {port} \
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash deepseek-ai/DeepSeek-V4-Flash-0731 \
+      --trust-remote-code \
+      --tensor-parallel-size {tensor_parallel} \
+      --kv-cache-dtype fp8 \
+      --block-size {block_size} \
+      --max-model-len {max_model_len} \
+      --max-num-seqs {max_num_seqs} \
+      --max-num-batched-tokens {max_num_batched_tokens} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --enable-prefix-caching \
+      --speculative-config '{{"method":"mtp","num_speculative_tokens":{num_speculative_tokens}}}' \
+      --tokenizer-mode deepseek_v4 \
+      --distributed-executor-backend ray \
+      --tool-call-parser deepseek_v4 \
+      --enable-auto-tool-choice \
+      --reasoning-parser deepseek_v4 \
+      --reasoning-config '{{"reasoning_parser":"deepseek_v4","reasoning_start_str":"","reasoning_end_str":""}}' \
+      --default-chat-template-kwargs.thinking=true \
+      --default-chat-template-kwargs.reasoning_effort=high \
+      --load-format instanttensor
