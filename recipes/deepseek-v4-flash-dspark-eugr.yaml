@@ -105,10 +105,25 @@ defaults:
   max_model_len: 200000
   block_size: 256
   max_num_seqs: 4
+  # Kept at 8192 (the eugr default). A 2026-08-01 llama-benchy A/B showed that raising
+  # it to 12288 only helped SHALLOW-context concurrency (c4 @ d0 +69%, c2 @ d4k +70%)
+  # while leaving the deep-context collapse untouched (c2/c4 @ d16-32k unchanged —
+  # that regime is prefill/sparse-MLA-indexer bound, not batch-slot starved) AND it
+  # shrank the KV pool 457k -> 298k tokens (200k concurrency 2.29x -> 1.49x). Net
+  # neutral for our single-stream agentic workload, so we kept the larger KV pool.
+  # CEILING (measured): 16384 does NOT fit at util 0.85 / max_model_len 200000 — the
+  # activation profile grows ~4.6 GiB and KV falls to 13.73 GiB vs the 14.46 GiB a
+  # 200k sequence needs → engine aborts at KV-cache init. To raise this you must trade
+  # KV: lower max_model_len (200k -> ~150k) or raise gpu_memory_utilization (risks the
+  # earlyoom cliff — ~1 GB MemAvailable headroom at 0.85).
   max_num_batched_tokens: 8192
   # DSpark requires num_speculative_tokens >= dspark_block_size (5). Do not lower it.
-  # (Unlike MTP, where 2 is our validated optimum and 3 measurably regresses — see
-  # memory/dspark_evaluation.md.)
+  # 5 is our validated optimum. A 2026-08-01 llama-benchy A/B of the upstream
+  # recipes.vllm.ai default (7 + draft_sample_method:greedy) vs this (5 +
+  # probabilistic) found 7/greedy WORSE: single-stream decode at depth fell ~30-35%
+  # (29.9 -> 20.5 t/s @32k) and accept length dropped 2.38 -> 1.71 tok/step. The
+  # `greedy` sampler agrees with the DSpark Markov draft less than `probabilistic`;
+  # PR #319's 5/probabilistic is tuned for this checkpoint. Keep 5.
   num_speculative_tokens: 5
 
 # Environment variables
