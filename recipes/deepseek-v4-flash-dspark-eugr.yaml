@@ -28,11 +28,43 @@
 #    "unknown speculative method 'dspark'". Rebuild: build-and-copy.sh --rebuild-vllm
 #    (launcher: REBUILD_VLLM=1). The DeepSeek-V4 cute-DSL/preset fixes needed to load
 #    on main (VLLM_PRESET_PRS 47392 47618) come with the main build automatically.
-# 2. MOD: mods/fix-dspark-sm120-topk must exist in the eugr checkout. It ships in
-#    PR #319 only, so the launcher fetches it out of the PR. Once #319 merges the
-#    fetch becomes a no-op and this note can go.
+# 2. MODS: BOTH mods below must exist in the eugr checkout; the launcher stages both.
+#    mods/fix-dspark-sm120-topk ships in PR #319 only, so the launcher fetches it out
+#    of the PR (once #319 merges the fetch becomes a no-op and this note can go).
+#    mods/fix-dspark-noncausal-topk-bucket is ours — canonical copy lives in this repo
+#    and is copied into the eugr checkout on every launch, because that checkout is
+#    disposable and a re-clone would silently drop it.
 #
-# ── WHY THE MOD (SM120 / DGX Spark GB10) ────────────────────────────────────────
+# ── WHY THE SECOND MOD, AND WHY IT MATTERS MORE THAN IT LOOKS ───────────────────
+# PR #319's mod makes DSpark *run* on SM120; ours makes it run *fast*. vLLM sizes the
+# draft's non-causal index list as cdiv(sliding_window + num_speculative_tokens, 128)*128
+# = cdiv(128+5,128)*128 = 256, but FlashInfer's SM120 decode_dsv4 has buckets
+# {128,512,1024} only. #319 resolves that by truncating indices[..., :128] — which drops
+# the non-causal tail, i.e. exactly the speculative-token entries that let draft position
+# k attend to its siblings. Output stays correct (the target verifies every proposal) but
+# accept-length collapses, worst at deep positions. Our mod rounds the width UP to 512 so
+# the kernel dispatches natively and nothing is discarded.
+#
+# A/B 2026-08-02, single-stream, temperature 0, median of 3 (this cluster, 0731, TP=2):
+#              accept rate      mean accept len     tok/s (median)
+#   depth 0    0.337 -> 0.464   2.68 -> 3.32        35.97 -> 42.30   (+17.6%)
+#   depth 4k   0.370 -> 0.500   2.85 -> 3.50        35.86 -> 42.01
+#   depth 16k  0.372 -> 0.525   2.86 -> 3.63        34.84 -> 48.39
+#   depth 32k  0.407 -> 0.571   3.04 -> 3.85        39.12 -> 40.75
+#   per-position acceptance @32k: 0.79/0.57/0.40/0.21/0.067 -> 0.85/0.71/0.58/0.42/0.31
+# The tok/s column at depth is prefill-contaminated by the harness and noisy; depth 0
+# (no prefill) is the trustworthy throughput figure. Acceptance is the clean signal and
+# it improves at every depth, most at the deep draft positions the truncation was eating.
+#
+# NOTE this is NOT the bug described in tonyd2wild's DSpark-1M-NVFP4 repo (a DSpark
+# weight loader dropping 12 shared-expert tensors, w1/w3 never mapped to gate_up_proj).
+# That one is ALREADY FIXED in our vLLM: the rewritten loader at
+# vllm/models/deepseek_v4/nvidia/dspark.py carries ("gate_up_proj","w1"/"w3") in its
+# stacked_params_mapping, and the log confirms "DSpark draft model loaded: 96 params"
+# with no skips. Same symptom (halved acceptance, perfect output), different cause —
+# do not go chasing the loader.
+#
+# ── WHY THE FIRST MOD (SM120 / DGX Spark GB10) ──────────────────────────────────
 # The DSpark draft runs a sparse-MLA decode with topk=256, but FlashInfer's SM120
 # decode_dsv4 kernel only has compiled buckets {128,512,1024}. topk=256 falls in the
 # gap, the dispatcher falls through to the paged kernel, and warmup crashes on
@@ -87,9 +119,20 @@ container: vllm-node
 # Claims essentially the whole 2-Spark cluster; both nodes required.
 cluster_only: true
 
-# DSpark draft topk fix for SM120 — ships in eugr PR #319, fetched by the launcher.
-# Resolved relative to the eugr repo root, where mods live.
+# DSpark draft topk fixes for SM120 — resolved relative to the eugr repo root.
+#
+# fix-dspark-noncausal-topk-bucket (OURS) must come first conceptually: it widens the
+# draft's non-causal index list from 256 to 512 so FlashInfer's SM120 decode_dsv4 has a
+# compiled bucket for it natively. fix-dspark-sm120-topk (from PR #319, fetched by the
+# launcher) then no-ops — 512 is already a supported bucket — and stays only as a
+# fallback for shapes the rounding cannot reach.
+#
+# WITHOUT the bucket mod, PR #319's mod rescues the dispatch by truncating
+# indices[..., :128], which drops the non-causal tail (the speculative tokens each draft
+# position needs to see its siblings) and guts accept-length. See that mod's header for
+# the full mechanism and the measured A/B.
 mods:
+  - mods/fix-dspark-noncausal-topk-bucket
   - mods/fix-dspark-sm120-topk
 
 # Default settings (can be overridden via CLI). gpu_memory_utilization is the
@@ -124,6 +167,12 @@ defaults:
   # (29.9 -> 20.5 t/s @32k) and accept length dropped 2.38 -> 1.71 tok/step. The
   # `greedy` sampler agrees with the DSpark Markov draft less than `probabilistic`;
   # PR #319's 5/probabilistic is tuned for this checkpoint. Keep 5.
+  # RE-TEST PENDING (2026-08-02): that A/B ran while the draft was being truncated to
+  # topk=128, which crushed the deep draft positions — exactly the positions a larger
+  # num_speculative_tokens depends on. With fix-dspark-noncausal-topk-bucket in place
+  # position 4 now accepts at 0.31 (was 0.067), so 7 may no longer lose. Worth re-running
+  # before treating 5 as settled. Note the width itself is bucket-quantized now: any
+  # value 1..383 lands on 512, so raising it costs no extra draft attention width.
   num_speculative_tokens: 5
 
 # Environment variables

@@ -15,6 +15,14 @@
 # $EUGR_DIR/mods/ and does NOT switch that repo's branch or touch tracked files.
 # Once #319 merges, the mod arrives on main and the fetch no-ops.
 #
+# WE ALSO STAGE OUR OWN MOD, mods/fix-dspark-noncausal-topk-bucket, whose canonical copy
+# is versioned in THIS repo and copied into $EUGR_DIR/mods/ on every launch. It widens the
+# draft's non-causal index list 256 -> 512 so FlashInfer dispatches natively, which makes
+# PR #319's mod stop truncating indices[..., :128]. That truncation was costing us roughly
+# a quarter of our decode throughput (A/B 2026-08-02: mean accept length 2.68 -> 3.32 at
+# d0 and 3.04 -> 3.85 at 32k; 35.97 -> 42.30 tok/s single-stream short-context, +17.6%).
+# See that mod's header for the mechanism. Do NOT drop it while #319's mod is in play.
+#
 # THE IMAGE MUST CARRY vLLM #46995 (the DSpark method), or startup dies with
 # "unknown speculative method 'dspark'". Our other eugr recipes don't need this, so a
 # `vllm-node` that works for them can still be too old here — REBUILD_VLLM=1 forces it.
@@ -77,6 +85,9 @@ PR_NUM="${PR_NUM:-319}"
 PR_REMOTE="${PR_REMOTE:-origin}"
 MOD_PATH="mods/fix-dspark-sm120-topk"
 
+# OUR mod (canonical copy lives in this repo, synced into the eugr checkout below).
+LOCAL_MOD_PATH="mods/fix-dspark-noncausal-topk-bucket"
+
 if [[ ! -d "$EUGR_DIR" ]]; then
   echo "✗ eugr repo not found at $EUGR_DIR" >&2
   echo "  git clone https://github.com/eugr/spark-vllm-docker.git $EUGR_DIR" >&2
@@ -127,6 +138,23 @@ ensure_pr_mod() {
   )
 }
 
+# Sync OUR mod into the eugr checkout. Canonical copy is versioned in THIS repo (the
+# eugr checkout is disposable — a re-clone would silently drop it and the recipe would
+# fail to find the mod), so we copy on every launch and let the newer file win.
+ensure_local_mod() {
+  local src="$SCRIPT_DIR/$LOCAL_MOD_PATH" dst="$EUGR_DIR/$LOCAL_MOD_PATH"
+  [[ -d "$src" ]] || { echo "✗ local mod missing: $src" >&2; exit 1; }
+  if [[ -f "$dst/run.sh" ]] && cmp -s "$src/run.sh" "$dst/run.sh"; then
+    echo "▶ $LOCAL_MOD_PATH already current in $EUGR_DIR"
+    return 0
+  fi
+  echo "▶ syncing $LOCAL_MOD_PATH from this repo into $EUGR_DIR…"
+  mkdir -p "$dst"
+  cp "$src/run.sh" "$dst/run.sh"
+  chmod +x "$dst/run.sh"
+  echo "  ✓ $LOCAL_MOD_PATH staged"
+}
+
 cd "$EUGR_DIR"
 
 if [[ "${REBUILD_VLLM:-0}" == "1" ]]; then
@@ -143,6 +171,7 @@ if [[ "${DOWNLOAD_MODEL:-0}" == "1" ]]; then
 fi
 
 ensure_pr_mod
+ensure_local_mod
 
 echo
 echo "═══ DeepSeek-V4-Flash-0731 + DSpark (stock eugr image, port of PR #$PR_NUM) ═══"
@@ -172,4 +201,10 @@ echo "    • 'GPU KV cache size' — a full 200k fp8 request needs ~2.1 GiB; if
 echo "      near that, lower max_model_len rather than climbing util past 0.85."
 echo "    • '[fix-dspark-sm120-topk] applied' — the mod ran; absent = expect a"
 echo "      'num_tokens > 64' crash during sparse-MLA warmup."
-echo "    • accept length — eugr reports ~4 on code workloads, ~53 tok/s."
+echo "    • noncausal_index_width is 512, not 256 — proves our bucket mod took:"
+echo "        ssh $HEAD 'docker exec $NAME grep -n _DSV4_TOPK_BUCKETS \\"
+echo "          /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/sparse_swa.py'"
+echo "      Absent = the draft is being truncated to topk=128 and accept length"
+echo "      will sit near 2.7-3.0 instead of 3.3-3.9."
+echo "    • accept length — expect ~3.3 short-context / ~3.9 at 32k on this cluster"
+echo "      (eugr reports ~4 on code workloads, ~53 tok/s)."
