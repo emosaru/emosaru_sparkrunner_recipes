@@ -1,5 +1,8 @@
 recipe_version: "2"
-model: deepseek-ai/DeepSeek-V4-Flash
+# Repointed 2026-08-02 from the bare preview id to the official 0731 release: the
+# preview checkpoint was deleted from both nodes' HF caches to make room, and this was
+# the last recipe still pinning it — left alone it would silently re-download ~149 GB.
+model: deepseek-ai/DeepSeek-V4-Flash-0731
 runtime: vllm
 container: scitrera/dgx-spark-vllm-jasl-ds4:20260609
 min_nodes: 2
