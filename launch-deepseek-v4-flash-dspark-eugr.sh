@@ -88,6 +88,19 @@ MOD_PATH="mods/fix-dspark-sm120-topk"
 # OUR mod (canonical copy lives in this repo, synced into the eugr checkout below).
 LOCAL_MOD_PATH="mods/fix-dspark-noncausal-topk-bucket"
 
+# PRODUCTION NOTE (2026-08-02): tonyd2wild's stack (~/ds4-tony, container
+# ds4-tony-vllm-dspark-1) was promoted to production and now serves THIS port. It claims
+# the whole cluster, so starting this launcher on top of it would fight for memory and
+# port. Refuse rather than collide; stop the other stack first:
+#   ~/ds4-tony/stop-deepseek-v4-flash-dspark.sh
+if curl -fsS -m 3 "http://$HEAD:$PORT/v1/models" >/dev/null 2>&1; then
+  echo "✗ something is already serving http://$HEAD:$PORT/v1 — refusing to start." >&2
+  echo "  Likely tonyd2wild's stack (production since 2026-08-02). Stop it first:" >&2
+  echo "    ~/ds4-tony/stop-deepseek-v4-flash-dspark.sh" >&2
+  echo "  Override with PORT=… to run this side by side on a different port (needs free memory)." >&2
+  exit 1
+fi
+
 if [[ ! -d "$EUGR_DIR" ]]; then
   echo "✗ eugr repo not found at $EUGR_DIR" >&2
   echo "  git clone https://github.com/eugr/spark-vllm-docker.git $EUGR_DIR" >&2
