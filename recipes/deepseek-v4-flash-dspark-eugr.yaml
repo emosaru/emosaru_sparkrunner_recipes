@@ -198,6 +198,7 @@ command: |
       --max-num-batched-tokens {max_num_batched_tokens} \
       --gpu-memory-utilization {gpu_memory_utilization} \
       --enable-prefix-caching \
+      --enable-prompt-tokens-details \
       --speculative-config '{{"method":"dspark","num_speculative_tokens":{num_speculative_tokens},"draft_sample_method":"probabilistic"}}' \
       --tokenizer-mode deepseek_v4 \
       --distributed-executor-backend ray \
