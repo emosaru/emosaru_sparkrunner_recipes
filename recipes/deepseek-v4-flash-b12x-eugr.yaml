@@ -1,0 +1,127 @@
+# Recipe: DeepSeek-V4-Flash-0731 on eugr B12X — OUR PRODUCTION FORK.
+#
+# ── WHY THIS FILE EXISTS (two deltas, both frontend-only) ────────────────────
+# Byte-for-byte eugr's recipes/deepseek-v4-flash-0731-mnbt4096.yaml EXCEPT for the
+# added lines below. NEITHER touches the engine: no effect on the KV pool, the mnbt
+# tuning, or the memory-profiling peak that the launcher header defends.
+#
+# DELTA 1 — served model alias:
+#     --served-model-name deepseek-ai/DeepSeek-V4-Flash-0731 deepseek-ai/DeepSeek-V4-Flash
+#
+# eugr's recipe sets no --served-model-name, so vLLM serves ONLY the checkpoint path
+# `deepseek-ai/DeepSeek-V4-Flash-0731`. The retired tonyd2wild stack served the base
+# alias `deepseek-ai/DeepSeek-V4-Flash` as well, so every client that hardcoded the base
+# id 404s the moment production moves here. This restores the alias.
+#
+# ORDER MATTERS: -0731 stays FIRST, so /v1/models data[0] remains the canonical
+# checkpoint id and nothing that already reads /v1/models changes behaviour. The bare
+# alias is second, purely for backwards compatibility with hardcoded clients.
+#
+# DELTA 2 — usage/cache accounting for API clients (added 2026-08-25):
+#     --enable-prompt-tokens-details
+#     --enable-force-include-usage
+#
+# Both are vLLM FrontendArgs defaulting to False (entrypoints/openai/cli_args.py:132,138),
+# and without them opencode-style cost/cache estimation is blind:
+#   * prompt-tokens-details off => _make_prompt_tokens_details() (openai/chat_completion/
+#     serving.py:88) short-circuits to None, so `usage.prompt_tokens_details` is null on
+#     EVERY response and `cached_tokens` / `created_cache_tokens` are never emitted --
+#     measured 2026-08-24 on the live stack: an identical 2,970-token prompt replayed
+#     back-to-back reported null details despite --enable-prefix-caching being on and
+#     hitting. The prefix cache WORKS; only the reporting was suppressed.
+#     This also silently disables the Anthropic route: /v1/messages derives
+#     cache_read_input_tokens / cache_creation_input_tokens from prompt_tokens_details
+#     (entrypoints/anthropic/serving.py:56), so it reported no cache fields either.
+#   * force-include-usage off => streaming carries a usage chunk ONLY if the client sends
+#     stream_options.include_usage (measured: 0 usage chunks without it, 1 with). Forcing
+#     it server-side removes the dependency on each client's SDK defaults.
+#
+# ── RE-SYNC WHEN eugr UPDATES ─────────────────────────────────────────────────
+# This is a FORK: upstream fixes no longer flow in automatically. After an eugr pull:
+#     diff <(sed -E "/served-model-name|enable-prompt-tokens-details|enable-force-include-usage/d" \
+#              recipes/deepseek-v4-flash-b12x-eugr.yaml) \
+#          ~/code/spark-vllm-docker-eugr/recipes/deepseek-v4-flash-0731-mnbt4096.yaml
+# That diff should show ONLY this header block. Anything else means upstream moved and
+# this file needs rebasing.
+#
+# Tuning rationale (len auto / async ON / mnbt 4096) lives in the launcher header:
+# launch-deepseek-v4-flash-b12x-eugr.sh, and memory/eugr_b12x_production.md.
+#
+# Recipe: DeepSeek V4 Flash 0731
+# DeepSeek V4 Flash using the B12X-optimized serving stack on an SM121 cluster
+
+recipe_version: "1"
+name: DeepSeek-V4-Flash-0731-b12x-prod
+description: vLLM serving deepseek-ai/DeepSeek-V4-Flash-0731 on a dual Sparks using B12X docker
+
+model: deepseek-ai/DeepSeek-V4-Flash-0731
+container: vllm-node-b12x
+
+build_args:
+  - --exp-b12x
+
+cluster_only: true
+
+mods:
+  - mods/instanttensor-hybrid-draft-loader
+#   - mods/drop-caches
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.85
+  max_model_len: auto
+  block_size: 256
+  max_num_seqs: 8
+  max_num_batched_tokens: 4096
+  max_cudagraph_capture_size: 64
+  num_speculative_tokens: 5
+
+env:
+  CUTE_DSL_ARCH: "sm_121a"
+  VLLM_USE_AOT_COMPILE: "1"
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+  VLLM_USE_MEGA_AOT_ARTIFACT: "-1"
+  VLLM_MEMORY_PROFILE_INCLUDE_ATTN: "1"
+  VLLM_USE_FLASHINFER_SAMPLER: "1"
+  VLLM_USE_B12X_WO_PROJECTION: "1"
+  VLLM_USE_B12X_MHC: "1"
+  VLLM_USE_B12X_FP8_GEMM: "1"
+  VLLM_USE_B12X_MOE: "1"
+  VLLM_USE_B12X_SPARSE_INDEXER: "1"
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+  VLLM_MOE_SKIP_PADDING: "0"
+  B12X_MLA_SM120_UNIFIED: "1"
+  B12X_MOE_FORCE_A8: "1"
+
+command: |
+  vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 \
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash-0731 deepseek-ai/DeepSeek-V4-Flash \
+      --host {host} \
+      --port {port} \
+      --trust-remote-code \
+      --tensor-parallel-size {tensor_parallel} \
+      --kv-cache-dtype fp8 \
+      --block-size {block_size} \
+      --max-model-len {max_model_len} \
+      --max-num-seqs {max_num_seqs} \
+      --max-num-batched-tokens {max_num_batched_tokens} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --enable-prefix-caching \
+      --enable-prompt-tokens-details \
+      --enable-force-include-usage \
+      --tokenizer-mode deepseek_v4 \
+      --tool-call-parser deepseek_v4 \
+      --enable-auto-tool-choice \
+      --reasoning-parser deepseek_v4 \
+      --reasoning-config '{{"reasoning_parser":"deepseek_v4","reasoning_start_str":"","reasoning_end_str":""}}' \
+      --default-chat-template-kwargs.thinking=true \
+      --default-chat-template-kwargs.reasoning_effort=high \
+      --load-format instanttensor \
+      --moe-backend b12x \
+      --linear-backend b12x \
+      --attention-backend B12X_MLA_SPARSE \
+      --max-cudagraph-capture-size {max_cudagraph_capture_size} \
+      --compilation-config '{{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}}' \
+      --speculative-config '{{"method":"dspark","num_speculative_tokens":{num_speculative_tokens},"draft_sample_method":"probabilistic","attention_backend":"B12X_MLA_SPARSE"}}'
