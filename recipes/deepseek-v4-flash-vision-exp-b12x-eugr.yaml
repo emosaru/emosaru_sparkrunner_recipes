@@ -1,0 +1,168 @@
+# Recipe: DeepSeek-V4-Flash-Vision-Exp on eugr B12X — TRIAL, NOT PRODUCTION.
+#
+# Deliberately a near-clone of recipes/deepseek-v4-flash-b12x-eugr.yaml (our production
+# 0731 fork) so that an A/B against production measures THE CHECKPOINT, not a config
+# rewrite. Every line below is either identical to production or listed as a forced
+# delta. Nothing was "tuned" on the way across.
+#
+# ── FORCED DELTAS (the checkpoint rejects or breaks on the production value) ──
+#
+# 1. model / served-model-name -> the Vision-Exp id.
+#
+# 2. num_speculative_tokens 5 -> 6.  **k=5 IS REJECTED.** Vision-Exp ships
+#    `num_nextn_predict_layers: 3` (0731 shipped 1), and DSpark requires
+#    `k % 3 == 0` once `k > n_predict`. 6 is the smallest legal k that is also
+#    >= dspark_block_size (5). Do NOT "restore" 5.
+#
+# 3. mods += deepseek-v4-vision-exp.  The checkpoint declares the SAME
+#    `architectures: ["DeepseekV4ForCausalLM"]` as 0731 while carrying 316 extra
+#    tensors (32-block ViT, 2-layer aligner, 4 image embeddings, per-layer bias_vl).
+#    Unpatched, vLLM either fails with `no module or parameter named 'aligner'` or —
+#    worse, on lineages that fail open — serves text-only and SILENTLY DROPS IMAGES.
+#    The mod also forces `rms_norm_eps` 1e-20 -> 1e-6, without which the b12x fused
+#    MHC Gram decode kernel raises during determine_available_memory
+#    (`_supports_fused_mhc_gram` hard-requires 1e-6). That override is guarded on
+#    `vision_n_layers > 0`, so it cannot touch a text-only checkpoint.
+#    See mods/deepseek-v4-vision-exp/PROVENANCE.md for what we verified and what we did not.
+#
+# ── HELD IDENTICAL TO PRODUCTION (this is the point of the file) ──────────────
+# gpu_memory_utilization 0.85 · max_num_seqs 8 · max_num_batched_tokens 4096 ·
+# block_size 256 · max_model_len auto · async scheduling DEFAULT (ON) ·
+# kv-cache-dtype fp8 · max_cudagraph_capture_size 64 · load-format instanttensor ·
+# moe/linear backend b12x · attention-backend B12X_MLA_SPARSE · the full B12X env
+# block · both usage/cache flags · DSpark draft_sample_method probabilistic ·
+# reasoning/tool parsers · compilation-config.
+#
+# ── SERVES ALL THREE IDS (deliberate, so the trial is drop-in for every client) ──
+#     deepseek-ai/DeepSeek-V4-Flash-Vision-Exp   <- canonical, FIRST
+#     deepseek-ai/DeepSeek-V4-Flash-0731         <- production's canonical id
+#     deepseek-ai/DeepSeek-V4-Flash              <- production's bare alias
+#
+# Order matches the production convention: the real checkpoint id is FIRST, so
+# /v1/models data[0] is always the thing actually loaded, and the aliases are additive.
+#
+# KNOW WHAT THIS MEANS: while the trial is up, a client that asks for
+# `-0731` or the bare id is answered by **Vision-Exp**, not by 0731. That is the point
+# (no client reconfiguration for a soak), but it also means the swap is INVISIBLE from
+# the client side — nothing 404s to warn you. Two consequences worth holding onto:
+#   * Any A/B or benchmark result collected while this stack is up is a Vision-Exp
+#     number even if the harness was told `-0731`. Check /v1/models data[0], or the
+#     `model` field echoed on each response, before attributing a number to 0731.
+#   * Vision-Exp decodes ~10-17% slower than 0731 (weaker DSpark head). Clients that
+#     silently land here will feel that as a latency regression with no obvious cause.
+# Drop the two alias tokens from --served-model-name below if you would rather have
+# stale clients fail loudly than be answered by a different checkpoint.
+#
+# WHERE WE DIVERGE FROM vavrusa/sparkrun-recipes (the upstream vision recipe), we
+# diverged TOWARD production on purpose. Upstream uses gmu 0.82, max_num_seqs 5,
+# kv_cache_dtype fp8_ds_mla, draft greedy, plus PYTHONHASHSEED / prefix-cache-retention /
+# flashinfer-autotune / an override-generation-config. Those are reasonable, but each
+# one is a confound in a checkpoint A/B. If the run OOMs, back off with the launcher's
+# GMU= knob (see below) rather than editing this file — that keeps one variable moving.
+#
+# ── EXPECT IT TO BE WORSE THAN PRODUCTION, AND KNOW WHY ──────────────────────
+# * The vision tower (~410M params / ~0.8 GiB bf16) is REPLICATED on every TP rank,
+#   not sharded, and adds activation peak. The KV pool WILL be smaller than
+#   production's 1,995,672 tokens. That is expected, not a misconfiguration.
+# * Decode runs ~10-17% behind 0731: this checkpoint's DSpark head accepts ~0.46 vs
+#   0731's 0.56-0.59. Two independent community stacks measured it. Checkpoint
+#   property, not a config one — do not chase it with tuning.
+# * Vision fidelity is below DeepSeek's reference on two known axes (bias_vl not
+#   applied at routing; causal instead of bidirectional within-image attention).
+#
+# ── RULES INHERITED FROM PRODUCTION (still true here) ─────────────────────────
+# * Never set --max-model-len. `auto` = the full 1,048,576. Truncating buys nothing;
+#   the `GPU KV cache size` line is concurrency x max_model_len, a projection.
+#   Judge capacity by `Available KV cache memory` + max_concurrency.
+# * Never pass --no-async-scheduling: it forfeits the second-in-flight-batch KV
+#   reservation that motivated the migration to eugr in the first place.
+# * Cap deep-context concurrency at 2.
+#
+# Images go in USER messages only — system/assistant image parts return HTTP 400, and
+# so do images inside tool results (that one bit the community; it needs a proxy that
+# re-homes tool-result media into a following user message).
+# Max 384 image tokens per image (vision_max_n_token).
+
+recipe_version: "1"
+name: DeepSeek-V4-Flash-Vision-Exp-b12x-trial
+description: vLLM serving deepseek-ai/DeepSeek-V4-Flash-Vision-Exp (native image input) on dual Sparks via eugr B12X + vendored vision mod
+
+model: deepseek-ai/DeepSeek-V4-Flash-Vision-Exp
+container: vllm-node-b12x
+
+build_args:
+  - --exp-b12x
+
+cluster_only: true
+
+# NOTE: the vision mod is NOT listed here. Recipe `mods:` entries resolve against the
+# EUGR repo dir (run-recipe.py: `SCRIPT_DIR / mod`), so a mod vendored in THIS repo
+# cannot be named relatively. The launcher passes it as an absolute --apply-mod,
+# which run-recipe.py appends AFTER the recipe mods — preserving the required order
+# (instanttensor first, then vision).
+mods:
+  - mods/instanttensor-hybrid-draft-loader
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.85
+  max_model_len: auto
+  block_size: 256
+  max_num_seqs: 8
+  max_num_batched_tokens: 4096
+  max_cudagraph_capture_size: 64
+  # FORCED: k must be a multiple of 3 on this checkpoint (n_predict=3). 5 is rejected.
+  num_speculative_tokens: 6
+
+env:
+  CUTE_DSL_ARCH: "sm_121a"
+  VLLM_USE_AOT_COMPILE: "1"
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+  VLLM_USE_MEGA_AOT_ARTIFACT: "-1"
+  VLLM_MEMORY_PROFILE_INCLUDE_ATTN: "1"
+  VLLM_USE_FLASHINFER_SAMPLER: "1"
+  VLLM_USE_B12X_WO_PROJECTION: "1"
+  # Kept ON. The mod's rms_norm_eps override exists precisely so this can stay on;
+  # VLLM_USE_B12X_MHC=0 would route MHC to TileLang (no eps constraint) but drop the
+  # b12x fused decode kernel — a second confound, and a slower one.
+  VLLM_USE_B12X_MHC: "1"
+  VLLM_USE_B12X_FP8_GEMM: "1"
+  VLLM_USE_B12X_MOE: "1"
+  VLLM_USE_B12X_SPARSE_INDEXER: "1"
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+  VLLM_MOE_SKIP_PADDING: "0"
+  B12X_MLA_SM120_UNIFIED: "1"
+  B12X_MOE_FORCE_A8: "1"
+
+command: |
+  vllm serve deepseek-ai/DeepSeek-V4-Flash-Vision-Exp \
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash-Vision-Exp deepseek-ai/DeepSeek-V4-Flash-0731 deepseek-ai/DeepSeek-V4-Flash \
+      --host {host} \
+      --port {port} \
+      --trust-remote-code \
+      --tensor-parallel-size {tensor_parallel} \
+      --kv-cache-dtype fp8 \
+      --block-size {block_size} \
+      --max-model-len {max_model_len} \
+      --max-num-seqs {max_num_seqs} \
+      --max-num-batched-tokens {max_num_batched_tokens} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --enable-prefix-caching \
+      --enable-prompt-tokens-details \
+      --enable-force-include-usage \
+      --tokenizer-mode deepseek_v4 \
+      --tool-call-parser deepseek_v4 \
+      --enable-auto-tool-choice \
+      --reasoning-parser deepseek_v4 \
+      --reasoning-config '{{"reasoning_parser":"deepseek_v4","reasoning_start_str":"","reasoning_end_str":""}}' \
+      --default-chat-template-kwargs.thinking=true \
+      --default-chat-template-kwargs.reasoning_effort=high \
+      --load-format instanttensor \
+      --moe-backend b12x \
+      --linear-backend b12x \
+      --attention-backend B12X_MLA_SPARSE \
+      --max-cudagraph-capture-size {max_cudagraph_capture_size} \
+      --compilation-config '{{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}}' \
+      --speculative-config '{{"method":"dspark","num_speculative_tokens":{num_speculative_tokens},"draft_sample_method":"probabilistic","attention_backend":"B12X_MLA_SPARSE"}}'

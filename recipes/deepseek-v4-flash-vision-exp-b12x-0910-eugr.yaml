@@ -1,0 +1,130 @@
+# Recipe: DeepSeek-V4-Flash-Vision-Exp on the 2026-09-10 B12X image — CANDIDATE, NOT YET RUN.
+#
+# ⚠ THIS HAS NEVER BEEN BOOTED. The production recipe is
+# `deepseek-v4-flash-vision-exp-b12x-eugr.yaml` on the OLD 2026-08-23 image
+# (`vllm-node-b12x:latest`). Do not point production at this file until the test plan in
+# docs/vision-exp-0910-image-test-plan.md has been executed. Rollback = the other recipe.
+#
+# ── WHY THIS CANDIDATE EXISTS ─────────────────────────────────────────────────
+# The 2026-09-10 B12X image implements DeepSeek-V4-Flash-Vision-Exp NATIVELY
+# (eugr changelog 2026-09-08: "B12X container now supports deepseek-ai/DeepSeek-V4-Flash-Vision-Exp").
+# Verified by inspecting both images:
+#   IMAGE_PLACEHOLDER in tokenizers/deepseek_v4_encoding.py:  old 0  ->  new 4
+#   vision refs under models/deepseek_v4/:                    old 0  ->  new 10 files
+#   new modules: vl_model.py, vl_stub.py, b12x_indexer.py, fi_moe.py
+#   b12x kernel package:                                      10 -> 14 modules
+#   vLLM:  0.1.dev20133+gb5f995e73  ->  0.1.dev20610+g4b276a363  (~480 commits)
+#
+# THE MAIN PRIZE IS STABILITY, NOT SPEED: this drops our vendored 5-file
+# `mods/deepseek-v4-vision-exp`, which monkeypatches model internals and HARD-FAILS on every
+# image refresh. It already cost us one failed production restore (2026-09-11) when the
+# image bump invalidated its anchors. Any throughput gain from b12x_indexer.py / fi_moe.py
+# is UNMEASURED and must not be assumed.
+#
+# ── THE CHANGE THAT MAKES THE OLD RECIPE INVALID HERE ─────────────────────────
+# `--attention-backend B12X_MLA_SPARSE` DOES NOT EXIST in the new image. The enum in
+# v1/attention/backends/registry.py was consolidated:
+#   old image: B12X_MLA, B12X_MLA_SPARSE, B12X_HYBRID_MLA, B12X_ATTN
+#   new image: B12X
+# So this recipe uses `B12X` in BOTH --attention-backend and the speculative-config, matching
+# eugr's native recipe. Booting the production recipe unchanged on the new image would fail.
+#
+# ── DELTAS VS eugr's NATIVE recipes/deepseek-v4-flash-vision-exp.yaml ─────────
+#  (a) --served-model-name  — keeps the -0731 and bare aliases alive. Clients (and the
+#      LiteLLM proxy routes) address those ids; without it they 404.
+#  (b) --enable-prompt-tokens-details + --enable-force-include-usage — without these
+#      usage.prompt_tokens_details is null and EVERY client reads 0 cache hits. This has
+#      bitten us twice (memory/vllm_usage_cache_reporting.md).
+#  (c) max_num_batched_tokens 4096, NOT eugr's 8192. Ours is measured: the 2026-08-24
+#      bakeoff found mnbt 4096 raises AVAILABLE KV ~25% (16.9 vs 13.1 GiB) at no measurable
+#      prefill cost. This is the single most likely thing to want re-testing on the new
+#      image — it is variable #1 in the test plan.
+# Everything else is eugr's native value on purpose, because those are the values they
+# validated against THIS image. Note we thereby also adopt:
+#      max_cudagraph_capture_size 48 (production runs 64)
+#      VLLM_USE_MEGA_AOT_ARTIFACT "1" (production runs "-1")
+#
+# ── WHAT THIS RECIPE DOES *NOT* CLAIM ────────────────────────────────────────
+# It does NOT claim to fix the image prefix-cache bust
+# (memory/vision_image_prefix_cache_bust.md, ~16x TTFT on image turns). The new image's
+# flatten_content_blocks() docstring says images are "inlined at their position", which is
+# encouraging, but our diagnosis attributed the hoisting to the CHAT TEMPLATE, which ships
+# in the checkpoint and is unchanged by an image bump. Unresolved without a boot; it is
+# test #5.
+
+recipe_version: "1"
+name: DeepSeek-V4-Flash-Vision-Exp (B12X 2026-09-10, native vision) — CANDIDATE
+description: CANDIDATE vLLM serving deepseek-ai/DeepSeek-V4-Flash-Vision-Exp on the 2026-09-10 B12X image using NATIVE vision (no vendored mod)
+
+model: deepseek-ai/DeepSeek-V4-Flash-Vision-Exp
+container: vllm-node-b12x
+
+build_args:
+  - --exp-b12x
+
+cluster_only: true
+
+# NOTE: no mods/deepseek-v4-vision-exp. Vision is native in this image; applying our
+# vendored mod here fails with an anchor-drift FATAL, which is how we found all this.
+mods:
+  - mods/instanttensor-hybrid-draft-loader
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.85
+  max_model_len: auto
+  block_size: 256
+  max_num_seqs: 8
+  max_num_batched_tokens: 4096
+  max_cudagraph_capture_size: 48
+  num_speculative_tokens: 6
+
+env:
+  CUTE_DSL_ARCH: "sm_121a"
+  VLLM_USE_AOT_COMPILE: "1"
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+  VLLM_USE_MEGA_AOT_ARTIFACT: "1"
+  VLLM_MEMORY_PROFILE_INCLUDE_ATTN: "1"
+  VLLM_USE_FLASHINFER_SAMPLER: "1"
+  VLLM_USE_B12X_WO_PROJECTION: "1"
+  VLLM_USE_B12X_MHC: "1"
+  VLLM_USE_B12X_FP8_GEMM: "1"
+  VLLM_USE_B12X_MOE: "1"
+  VLLM_USE_B12X_SPARSE_INDEXER: "1"
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+  VLLM_MOE_SKIP_PADDING: "0"
+  B12X_MLA_SM120_UNIFIED: "1"
+  B12X_MOE_FORCE_A8: "1"
+
+command: |
+  vllm serve deepseek-ai/DeepSeek-V4-Flash-Vision-Exp \
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash-Vision-Exp deepseek-ai/DeepSeek-V4-Flash-0731 deepseek-ai/DeepSeek-V4-Flash \
+      --host {host} \
+      --port {port} \
+      --trust-remote-code \
+      --tensor-parallel-size {tensor_parallel} \
+      --kv-cache-dtype fp8 \
+      --block-size {block_size} \
+      --max-model-len {max_model_len} \
+      --max-num-seqs {max_num_seqs} \
+      --max-num-batched-tokens {max_num_batched_tokens} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --enable-prefix-caching \
+      --enable-prompt-tokens-details \
+      --enable-force-include-usage \
+      --tokenizer-mode deepseek_v4 \
+      --tool-call-parser deepseek_v4 \
+      --enable-auto-tool-choice \
+      --reasoning-parser deepseek_v4 \
+      --reasoning-config '{{"reasoning_parser":"deepseek_v4","reasoning_start_str":"","reasoning_end_str":""}}' \
+      --default-chat-template-kwargs.thinking=true \
+      --default-chat-template-kwargs.reasoning_effort=high \
+      --load-format instanttensor \
+      --moe-backend b12x \
+      --linear-backend b12x \
+      --attention-backend B12X \
+      --max-cudagraph-capture-size {max_cudagraph_capture_size} \
+      --compilation-config '{{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}}' \
+      --speculative-config '{{"method":"dspark","num_speculative_tokens":{num_speculative_tokens},"draft_sample_method":"probabilistic","attention_backend":"B12X"}}'

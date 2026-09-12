@@ -1,0 +1,80 @@
+# Recipe: Qwen3.8-27B-NVFP4 with DFlash2 speculative decoding
+# Uses TP=1 on a solo DGX Spark and defaults to TP=2 on a cluster.
+
+# Recipe: Qwen3.8-27B-NVFP4 + DFlash2 — OUR FORK of eugr's shipped recipe.
+#
+# ── WHY WE ARE TRYING THIS ────────────────────────────────────────────────────
+# DFlash2 is the single biggest speculative-decoding lever in the DGX Spark ecosystem:
+# +43% over DSpark/MTP on this exact model (124-135 tok/s single-stream on 2x Spark per
+# the community repro), and 2.2x on GLM-5.3-Flash (46.9 vs 21.8 tok/s). It does NOT exist
+# for Qwen3.8-Flash-Next -- the only Flash-Next drafter published (PixelML, 2026-09-10)
+# measures +0.37% on CODE and -5.9% on chat, i.e. nothing for our workload. So the way to
+# get DFlash2 is to change the target model, not the drafter.
+#
+# 27B is MULTIMODAL, which our proxy's vision-default route needs:
+# Qwen3_5ForConditionalGeneration with vision_config / image_token_id / vision_*_token_id.
+# VERIFY WITH A REAL IMAGE ANYWAY -- a clean boot has never proven vision on this cluster.
+#
+# ── TRADE VS FLASH-NEXT ───────────────────────────────────────────────────────
+# 27B is a far smaller model (20.4 GiB vs 124 GiB), so expect a much larger KV pool and
+# much higher throughput, against lower absolute quality than the 125B-A6B Flash-Next.
+# This is a different point on the curve, not a drop-in replacement.
+#
+# ── DELTAS VS UPSTREAM (eugr recipes/qwen3.8-27b-nvfp4-dflash2.yaml) ──────────
+#   (a) --served-model-name so clients can address a stable id
+#   (b) --enable-prompt-tokens-details + --enable-force-include-usage, WITHOUT WHICH
+#       usage.prompt_tokens_details is null and every client sees 0 cache hits
+#       (memory/vllm_usage_cache_reporting.md -- we have now been bitten by this twice)
+# Re-diff after an eugr pull:
+#   diff <(git -C ~/code/spark-vllm-docker-eugr show \
+#            origin/main:recipes/qwen3.8-27b-nvfp4-dflash2.yaml) \
+#        recipes/qwen3.8-27b-nvfp4-dflash2-eugr.yaml
+#
+# NOTE upstream sets `container: vllm-node` (NOT the b12x image). Our launcher passes -t
+# explicitly; the b12x image should serve this standard Qwen3.5-family arch fine, but if it
+# misbehaves, try the stock vllm-node image before blaming the recipe.
+# num_speculative_tokens is 8 here because DFlash2 drafts a BLOCK, unlike MTP's per-token
+# head -- do not "correct" it down to 3/4 by analogy with the Flash-Next recipes.
+
+recipe_version: "1"
+name: Qwen3.8-27B-NVFP4-DFlash2 (emosaru fork)
+description: vLLM serving nvidia/Qwen3.8-27B-NVFP4 with the z-lab DFlash2 draft model
+
+model: nvidia/Qwen3.8-27B-NVFP4
+container: vllm-node
+
+cluster_only: false
+solo_only: false
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.7
+  max_model_len: 262144
+  max_num_seqs: 8
+  max_num_batched_tokens: 16384
+  num_speculative_tokens: 8
+
+command: |
+  vllm serve nvidia/Qwen3.8-27B-NVFP4 \
+    --served-model-name Qwen/Qwen3.8-27B nvidia/Qwen3.8-27B-NVFP4 \
+    --host {host} \
+    --port {port} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --enable-prompt-tokens-details \
+    --enable-force-include-usage \
+    --speculative-config '{{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2","num_speculative_tokens":{num_speculative_tokens},"draft_tensor_parallel_size":{tensor_parallel}}}' \
+    --load-format instanttensor \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice \
+    --tensor-parallel-size {tensor_parallel}

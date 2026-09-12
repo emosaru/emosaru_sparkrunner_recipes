@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 bench_results/
 bench_results.json
+.flashnext-logs/
+.vision-watch/
