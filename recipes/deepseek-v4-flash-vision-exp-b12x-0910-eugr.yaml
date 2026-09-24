@@ -73,7 +73,12 @@ defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 2
-  gpu_memory_utilization: 0.85
+  # 0.83, NOT 0.85. After the 2026-09-12 silent TP stall the trade "less KV for more host
+  # margin" was agreed, but it was only ever passed as GMU=0.83 on the command line and never
+  # landed here — so every launch that used recipe defaults silently went back to 0.85,
+  # including the 2026-09-24 08:20 restore, which stalled again at 09:56 the same way.
+  # Persisted so the default IS the agreed value. See .vision-watch/crash-20260924T092042/.
+  gpu_memory_utilization: 0.83
   max_model_len: auto
   block_size: 256
   max_num_seqs: 8
