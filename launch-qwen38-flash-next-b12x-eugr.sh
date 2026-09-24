@@ -338,6 +338,40 @@ if [[ "${BLOCK_FP8_MTP_FIX:-1}" == "1" ]]; then
   [[ -x "$BLOCKFP8_MOD/run.sh" ]] || { echo "✗ block-fp8-mtp mod missing: $BLOCKFP8_MOD/run.sh" >&2; exit 1; }
   MODS+=(--apply-mod "$BLOCKFP8_MOD")
 fi
+
+# ── REDUCED-VOCABULARY MTP DRAFTING — OPT-IN, NEVER BOOTED ───────────────────
+# Restricts the DRAFT head's projection to the lowest N token ids. The win is bandwidth:
+# the draft head is read once per speculative position per decode step, and at TP=2 with
+# N=65536 rank 0 projects 65,536 of its 124,160 org rows while rank 1 skips its matmul
+# entirely — 26.4% of the full head's rows. Correctness is structural: masked ids are
+# never PROPOSED, and the target still verifies the full vocabulary, so an out-of-set
+# token is rejected like any other bad draft and the emitted text is unchanged.
+#
+# Community measurement (independently re-measured 2026-09-16, TP2+EP, mtp=3, 262k):
+# +8.4% mean throughput, "entirely step time, acceptance unchanged". Expect tok/step to
+# DIP slightly and tok/s to RISE — judge this on tok/s, not on acceptance.
+#
+# *** WE HAVE NEVER BOOTED THIS. *** Static validation only (anchors, idempotency,
+# byte-compile, shard arithmetic). See mods/mtp-reduced-draft-vocab/PROVENANCE.md for
+# what is verified, the safety rails, and the one known trade-off (it bypasses the b12x
+# BF16 vocabulary projection, which only applies at batch size 1).
+#
+#   DRAFT_VOCAB=65536 ./launch-qwen38-flash-next-b12x-eugr.sh
+#
+# Unset or 0 leaves drafting at the full 248,320 ids. The mod is inert without the env
+# var, so applying it and not setting DRAFT_VOCAB changes nothing.
+DRAFT_VOCAB_MOD="${DRAFT_VOCAB_MOD:-$SCRIPT_DIR/mods/mtp-reduced-draft-vocab}"
+if [[ "${DRAFT_VOCAB:-0}" != "0" ]]; then
+  [[ "$DRAFT_VOCAB" =~ ^[0-9]+$ ]] || {
+    echo "✗ DRAFT_VOCAB must be a positive integer (got '$DRAFT_VOCAB')" >&2; exit 1; }
+  [[ -x "$DRAFT_VOCAB_MOD/run.sh" ]] || {
+    echo "✗ reduced-draft-vocab mod missing: $DRAFT_VOCAB_MOD/run.sh" >&2; exit 1; }
+  MODS+=(--apply-mod "$DRAFT_VOCAB_MOD")
+  OVERRIDES+=(-e "VLLM_MTP_DRAFT_VOCAB_SIZE=$DRAFT_VOCAB")
+  echo "  ⚠ reduced-vocab MTP drafting ON (lowest $DRAFT_VOCAB ids) — UNPROVEN on our"
+  echo "    hardware. Confirm the 'Reduced-vocab MTP drafting ENABLED' line on rank 0,"
+  echo "    then A/B decode tok/s against a DRAFT_VOCAB=0 boot."
+fi
 ( cd "$EUGR_DIR" && ./run-recipe.sh "$RECIPE" -d \
     --config "$CONFIG" -t "$IMAGE" --port "$PORT" \
     "${MODS[@]}" "${OVERRIDES[@]}" "$@" )

@@ -1,0 +1,100 @@
+# Recipe: Qwen3.8-Flash-Next-NVFP4 (dual-node cluster) on the STANDARD eugr image (NOT b12x).
+#
+# *** STATUS 2026-09-24: WRITTEN BUT NEVER BOOTED. ***
+# It was superseded before it was needed: the b12x image runs TP=2 + EP fine once the
+# GLOBAL --moe-backend b12x is dropped (see the -noMoeB12x recipe), which keeps the b12x
+# GDN and linear kernels that this recipe would give up. Keep this only as the fallback
+# if a future image makes the b12x lane unusable altogether.
+#
+# ── WHY THIS EXISTS ───────────────────────────────────────────────────────────
+# Measured 2026-09-24 on eugr/spark-vllm-b12x:nightly-20260923: the nvidia checkpoint is
+# structurally unrunnable on the B12X MoE kernel at TP=2, in BOTH directions —
+#
+#   TP=2, no EP : MoE intermediate 640 is tensor-sliced to 320/rank; the block-FP8 MTP
+#                 experts need 128-divisibility -> "output_size of gate's and up's weight
+#                 = 320 is not divisible by weight quantization block_n = 128".
+#   TP=2, +EP   : ValueError: NvFp4 MoE backend 'B12X' does not support the deployment
+#                 configuration ... FusedMoEParallelConfig(ep_size=2, use_ep=True,
+#                 all2all_backend='allgather_reducescatter').
+#
+# Expert parallelism is the published fix for the first (whole experts per rank, so each
+# rank keeps the full 640 = 5x128), and B12X is what forbids the second. Dropping to the
+# STANDARD eugr image removes the B12X MoE kernel and with it the EP prohibition: the
+# stock NVFP4 MoE backends (FLASHINFER_CUTLASS et al.) support EP. This is also exactly
+# what the field runs — MiaAI-Lab's dual-Spark recipe is stock vLLM + EP +
+# allgather_reducescatter, and reports the best published dual numbers (72.8% MTP
+# acceptance, 3.65M KV @ gmu 0.835).
+#
+# THE TRADE: we give up the B12X MoE/GDN/linear kernels, which are the whole reason our
+# stack is on b12x (memory/tony_dspark_stack_bakeoff.md). Whether stock-MoE+EP at TP=2
+# beats B12X-MoE at TP=1 is precisely what this recipe exists to measure. Do not promote
+# it without that A/B.
+#
+# ── DELTAS vs recipes/qwen3.8-flash-next-nvfp4-cluster-eugr.yaml (the b12x fork) ──
+#  - container vllm-node (standard), no --exp-b12x build arg
+#  - dropped --load-format b12x, --gdn-decode-kernel b12x, --linear-backend b12x,
+#    --moe-backend b12x  (none exist outside the b12x image)
+#  - dropped every B12X_* / VLLM_B12X_* env var
+#  - KEPT --enable-expert-parallel and ADDED --all2all-backend allgather_reducescatter
+#  - KEPT the nvidia checkpoint, the ple_embedding_dtype hf-override, the usage flags
+#    and --served-model-name, all for the same reasons documented in the b12x fork.
+
+recipe_version: "1"
+name: Qwen3.8-Flash-Next-NVFP4 (Cluster, standard image, emosaru)
+description: vLLM serving nvidia/Qwen3.8-Flash-Next-NVFP4 on 2 DGX Sparks, TP=2 + EP, stock MoE
+
+model: nvidia/Qwen3.8-Flash-Next-NVFP4
+container: vllm-node
+
+build_args: []
+
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  pipeline_parallel: 1
+  block_size: 16
+  max_model_len: 262144
+  max_num_seqs: 16
+  max_num_batched_tokens: 4096
+  num_speculative_tokens: 3
+  gpu_memory_utilization: 0.8
+
+env:
+  CUTE_DSL_ARCH: "sm_121a"
+  SAFETENSORS_FAST_GPU: "1"
+  VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+  VLLM_SSM_CONV_STATE_LAYOUT: "DS"
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+
+command: |
+  vllm serve nvidia/Qwen3.8-Flash-Next-NVFP4 \
+    --host {host} \
+    --port {port} \
+    --served-model-name Qwen/Qwen3.8-Flash-Next nvidia/Qwen3.8-Flash-Next-NVFP4 local-inference-lab/Qwen3.8-Flash-Next-NVFP4 \
+    --trust-remote-code \
+    --tensor-parallel-size {tensor_parallel} \
+    --pipeline-parallel-size {pipeline_parallel} \
+    --mamba-cache-mode align \
+    --enable-expert-parallel \
+    --all2all-backend allgather_reducescatter \
+    --enable-prefix-caching \
+    --enable-prompt-tokens-details \
+    --enable-force-include-usage \
+    --enable-chunked-prefill \
+    --dtype bfloat16 \
+    --kv-cache-dtype fp8 \
+    --quantization modelopt_mixed \
+    --block-size {block_size} \
+    --max-model-len {max_model_len} \
+    --hf-overrides '{{"text_config": {{"ple_embedding_dtype": "float8_e4m3fn"}}}}' \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":{num_speculative_tokens}}}' \
+    --mm-encoder-tp-mode data \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice \
+    --gpu-memory-utilization {gpu_memory_utilization}

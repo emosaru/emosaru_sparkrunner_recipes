@@ -1,0 +1,132 @@
+# Recipe: Qwen3.8-Flash-Next-NVFP4 (SOLO / single DGX Spark) — OUR FORK of eugr's solo recipe.
+#
+# ── PROVENANCE ────────────────────────────────────────────────────────────────
+# Forked 2026-09-24 from eugr/spark-vllm-docker `recipes/qwen3.8-flash-next-nvfp4-solo.yaml`
+# (updated upstream 2026-09-23, commit 00837c8 "Earlyoom support in 3rd party containers;
+# updated Qwen3.8 Flash Next solo recipe"). Re-diff after any eugr pull:
+#
+#   diff <(git -C ~/code/spark-vllm-docker-eugr show \
+#            origin/main:recipes/qwen3.8-flash-next-nvfp4-solo.yaml) \
+#        recipes/qwen3.8-flash-next-nvfp4-solo-eugr.yaml
+#
+# ── WHY THIS EXISTS: TP=1 IS THE ONLY WAY THE NVIDIA QUANT RUNS ON B12X ───────
+# Measured 2026-09-24 on eugr/spark-vllm-b12x:nightly-20260923, the nvidia checkpoint is
+# structurally unrunnable on the b12x MoE kernel at TP=2, in BOTH directions:
+#
+#   TP=2, no EP : MoE intermediate 640 is tensor-sliced to 320/rank, and the block-FP8 MTP
+#                 experts need 128-divisibility -> "output_size of gate's and up's weight
+#                 = 320 is not divisible by weight quantization block_n = 128".
+#   TP=2, +EP   : ValueError: NvFp4 MoE backend 'B12X' does not support the deployment
+#                 configuration ... FusedMoEParallelConfig(ep_size=2, use_ep=True,
+#                 all2all_backend='allgather_reducescatter').
+#
+# At TP=1 there is no tensor slicing at all: the intermediate stays 640 (640/128 = 5), so
+# the block-FP8 MTP loads WITHOUT expert parallelism and the b12x MoE kernel is kept.
+# That is why this recipe sets tensor_parallel 1 and carries NO --enable-expert-parallel.
+#
+# ── DELTAS vs eugr's upstream solo recipe ─────────────────────────────────────
+#  (a) model: nvidia, not local-inference-lab. The local-inference-lab checkpoint is on
+#      NEITHER node (98.7 GiB needed; .237 had 89 GB free) and its MTP experts are
+#      W4A16_NVFP4 — a 4-BIT DRAFT HEAD. nvidia keeps the whole MTP module at FP8 block
+#      scales (verified in its config.json: group_1, num_bits=8, block 128, target
+#      `mtp.layers.0.mlp.experts`), which is the better drafter and what the field runs.
+#  (b) --served-model-name, so upstream/community ids resolve alongside nvidia's repo id.
+#  (c) --enable-prompt-tokens-details + --enable-force-include-usage. WITHOUT THESE,
+#      usage.prompt_tokens_details is null on every response and prefix caching LOOKS
+#      broken while working perfectly. See memory/vllm_usage_cache_reporting.md.
+#  (d) --hf-overrides ple_embedding_dtype float8_e4m3fn. nvidia's config.json OMITS the
+#      key while shipping the n-gram table at FP8, and ple_layer.py DEFAULTS the absent
+#      key to bfloat16. This is a config declaration, not a patch.
+#
+# ── REQUIRES mods/fix-block-fp8-mtp-modelopt ──────────────────────────────────
+# Re-verified 2026-09-24 against nightly-20260923: `grep -c weight_scale_inv` in the
+# image's modelopt.py is still 0, so the b12x fork STILL has not rebased onto upstream
+# PR #55513. Without our mod the nvidia checkpoint dies at weight load on
+# `Layer mtp.layers.48.mlp.experts has no parameter 'w2_weight_scale_inv'`.
+# The launcher applies it by default (BLOCK_FP8_MTP_FIX=1).
+#
+# ── 2026-09-24: --moe-backend b12x REMOVED (it breaks nvidia's block-FP8 MTP) ──
+# First TP=1 boot on nightly-20260923 died at engine init with:
+#   ValueError: moe_backend='b12x' is not supported for FP8 MoE. Expected one of
+#   ['triton','deep_gemm','cutlass','flashinfer_trtllm','flashinfer_cutlass','marlin',
+#    'humming','aiter','hpc']
+# --moe-backend is GLOBAL. The main model's routed experts are NVFP4 (b12x handles those
+# fine), but nvidia's MTP experts are block-FP8 and take the Fp8MoEMethod path, where
+# 'b12x' is not a registered backend. There is no per-quantization MoE override —
+# kernel.py has linear_backend_per_quant but NO moe_backend_per_quant — so one global
+# value has to satisfy both, and no value does while b12x is requested.
+# Dropping the flag lets each quant pick its own supported backend. We KEEP
+# --gdn-decode-kernel b12x and --linear-backend b12x, so two of the three b12x kernels
+# are retained; only the MoE kernel reverts to stock (FlashInfer/CUTLASS).
+
+recipe_version: "1"
+name: Qwen3.8-Flash-Next-NVFP4 (Solo, emosaru fork)
+description: vLLM serving nvidia/Qwen3.8-Flash-Next-NVFP4 on ONE DGX Spark, TP=1, PLE on disk
+
+model: nvidia/Qwen3.8-Flash-Next-NVFP4
+container: vllm-node-b12x
+
+build_args:
+  - --exp-b12x
+
+solo_only: true
+
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  pipeline_parallel: 1
+  block_size: 16
+  max_model_len: 262144
+  max_num_seqs: 8
+  max_num_batched_tokens: 4096
+  num_speculative_tokens: 3
+  gpu_memory_utilization: 0.8
+
+env:
+  VLLM_PLE_TABLE_MEMORY: "disk"
+  CUTE_DSL_ARCH: "sm_121a"
+  SAFETENSORS_FAST_GPU: "1"
+  VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+  VLLM_SSM_CONV_STATE_LAYOUT: "DS"
+  VLLM_USE_AOT_COMPILE: "1"
+  VLLM_USE_MEGA_AOT_ARTIFACT: "1"
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+  B12X_POLICY_MODE: "auto"
+  VLLM_MXFP8_LM_HEAD: "1"
+  VLLM_B12X_MOE_FP4_LAYER_MAX_INPUT_SCALE: "w13"
+
+command: |
+  vllm serve nvidia/Qwen3.8-Flash-Next-NVFP4 \
+    --host {host} \
+    --port {port} \
+    --served-model-name Qwen/Qwen3.8-Flash-Next nvidia/Qwen3.8-Flash-Next-NVFP4 local-inference-lab/Qwen3.8-Flash-Next-NVFP4 \
+    --trust-remote-code \
+    --tensor-parallel-size {tensor_parallel} \
+    --pipeline-parallel-size {pipeline_parallel} \
+    --mamba-cache-mode align \
+    --enable-prefix-caching \
+    --enable-prompt-tokens-details \
+    --enable-force-include-usage \
+    --enable-chunked-prefill \
+    --dtype bfloat16 \
+    --kv-cache-dtype fp8 \
+    --quantization modelopt_mixed \
+    --block-size {block_size} \
+    --load-format b12x \
+    --max-model-len {max_model_len} \
+    --hf-overrides '{{"text_config": {{"ple_embedding_dtype": "float8_e4m3fn"}}}}' \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":{num_speculative_tokens}}}' \
+    --gdn-decode-kernel b12x \
+    --linear-backend b12x \
+    --no-enable-flashinfer-autotune \
+    --mm-encoder-tp-mode data \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice \
+    --compilation-config '{{"pass_config":{{"fuse_act_quant":true}}}}' \
+    --gpu-memory-utilization {gpu_memory_utilization}

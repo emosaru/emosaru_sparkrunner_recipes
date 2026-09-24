@@ -1,0 +1,206 @@
+# ── 2026-09-24 VARIANT: b12x image, TP=2 + EP, but NO --moe-backend b12x ──────
+# Two failures on nightly-20260923 produced this variant:
+#   TP=2 +EP, --moe-backend b12x -> ValueError: NvFp4 MoE backend 'B12X' does not support
+#     the deployment configuration ... FusedMoEParallelConfig(ep_size=2, use_ep=True).
+#   TP=1,     --moe-backend b12x -> ValueError: moe_backend='b12x' is not supported for
+#     FP8 MoE  (nvidia's MTP experts are block-FP8; --moe-backend is GLOBAL and there is
+#     no moe_backend_per_quant, only linear_backend_per_quant).
+# Both are the same root cause: one global MoE backend cannot serve the main model's
+# NVFP4 experts AND nvidia's block-FP8 MTP experts when the requested value is b12x.
+# Dropping the flag lets each quant resolve its own backend, which also removes the EP
+# prohibition (the stock NVFP4 backends support expert parallelism).
+# We KEEP --gdn-decode-kernel b12x and --linear-backend b12x, so this still runs two of
+# the three b12x kernels — strictly more b12x than the standard-image recipe.
+
+# Recipe: Qwen3.8-Flash-Next-NVFP4 (dual-node cluster) — OUR FORK of eugr's shipped recipe.
+#
+# ── PROVENANCE ────────────────────────────────────────────────────────────────
+# Forked 2026-09-11 from eugr/spark-vllm-docker `recipes/qwen3.8-flash-next-nvfp4-cluster.yaml`
+# (added upstream 2026-09-08, commit e5174b8 "qwen3.8-next and deepseek vision exp support").
+# BEING A FORK, upstream fixes do NOT flow in automatically. Re-diff after any eugr pull:
+#
+#   diff <(git -C ~/code/spark-vllm-docker-eugr show \
+#            origin/main:recipes/qwen3.8-flash-next-nvfp4-cluster.yaml) \
+#        recipes/qwen3.8-flash-next-nvfp4-cluster-eugr.yaml
+#
+# FUNCTIONAL DELTAS vs upstream: (a) --served-model-name, so the natural upstream id
+# `Qwen/Qwen3.8-Flash-Next` resolves alongside the quant's own repo id; and (b)
+# --enable-prompt-tokens-details + --enable-force-include-usage, WITHOUT WHICH CLIENTS SEE
+# NO CACHE INFO AT ALL. Both vLLM FrontendArgs default to False, so usage.prompt_tokens_details
+# is null on every response and cached_tokens is invisible — prefix caching then LOOKS broken
+# while working perfectly. Measured 2026-09-11 on this model: a repeated 26,655-token prompt
+# hit 100% server-side (13.4s -> 4.8s) while the client still saw prompt_tokens_details: null.
+# Same two flags are in the DeepSeek prod recipe; see memory/vllm_usage_cache_reporting.md.
+# Everything else —
+# TP=2, block_size 16, len 262144, mnbt 4096, MTP 4, gmu 0.7, the b12x backend flags — is
+# upstream's, unmodified. Do not "tune" these without a measured A/B; see the launch
+# script header for what is and is not known about this config on our hardware.
+#
+# ── WHY THIS IS THE ONLY VIABLE PATH ──────────────────────────────────────────
+# Our 2026-08-26 evaluation concluded "SGLang, not vLLM". THAT CONCLUSION IS DEAD:
+#   * vLLM PR #53896 (model support) MERGED 2026-08-31, shipped in v0.29.0 (2026-09-09).
+#   * SGLang PR #36497 was CLOSED UNMERGED (2026-09-08) — the SGLang path is the dead one.
+#   * eugr then shipped these b12x recipes, and local-inference-lab (the org b12x is built
+#     from) published the NVFP4 quant this recipe names. That was the exact signal the old
+#     eval said to watch for, and it fired.
+# So the entire feared cost — "a second serving stack, none of our tooling carries over" —
+# does not apply. This runs on our existing eugr/b12x toolchain.
+#
+# ── WHAT THE OLD EVAL GOT RIGHT AND STILL APPLIES ─────────────────────────────
+# * `--mamba-cache-mode align` is REQUIRED; `all` raises NotImplementedError. Present below.
+# * Legal TP is {1,2,4,8}: QSA needs tp%2==0 above 2, GDN must divide linear_num_key_heads=16.
+#   TP=2 is ours and is fine.
+# * PLE offload is IMPOSSIBLE on a cluster — `_validate_ple_offload_config` rejects nnodes!=1.
+#   That is why this is the CLUSTER recipe and carries no VLLM_PLE_TABLE_MEMORY. The n-gram
+#   table is a VocabParallelEmbedding, so at TP=2 it simply TP-shards across the two Sparks
+#   and offload is never needed. (eugr's -solo recipe uses disk offload; not applicable here.)
+# * Never set VLLM_GDN_DECODE_KERNEL explicitly — unset falls back gracefully, set turns the
+#   same condition into a startup ValueError. This recipe uses --gdn-decode-kernel b12x instead.
+#
+# ── TWO THINGS TO VERIFY ON FIRST BOOT (both were open questions in the old eval) ──
+# 1. `--kv-cache-dtype fp8`: upstream vLLM's QSA Triton kernels assert bf16 and raise
+#    NotImplementedError on quantized KV. eugr ships fp8 here, so b12x must carry its own
+#    QSA path. If boot dies with a KV-dtype NotImplementedError, drop to `auto` — and expect
+#    a large KV-pool loss, because BF16 KV is ~2.3x/token.
+# 2. Multimodality: this model is natively multimodal (27-layer ViT) and the recipe sets
+#    --mm-encoder-tp-mode data. A clean boot does NOT prove image input works. Test an
+#    actual image before believing it, exactly as with Vision-Exp.
+
+# ── 2026-09-11: SWITCHED local-inference-lab -> nvidia, AND mtp 4 -> 3 ────────
+# WHY THE CHECKPOINT CHANGED — the draft head was being quantized to 4 bits.
+#   local-inference-lab: MTP experts at W4A16_NVFP4 (4-bit)   -> measured 2.52 tok/step
+#   nvidia:              whole MTP module at FP8_BLOCK_SCALES -> 2.93 tok/step reported
+# A draft head's entire job is to AGREE with the target, so 4-bit is exactly the wrong
+# place to save space. nvidia's quant keeps the MTP module and the PLE n-gram embedding
+# byte-identical to the FP8 release and only NVFP4s the 48 routed-expert layers
+# (hf_quant_config: NVFP4 x48, FP8 x1, FP8_BLOCK_SCALES x1 — versus ours: MXFP8 x467,
+# NVFP4 x48, W4A16_NVFP4 x29). Costs 123.6 GiB on disk vs 98.7.
+# Reference: ai-muninn DGX Spark benchmark (nvidia quant, mtp=3): 2.93 tok/step, code
+# acceptance 93/78/67% at positions 1-3, 41.7 tok/s median.
+#
+# WHY mtp 4 -> 3: eugr shipped 4; every DGX Spark forum thread uses 2 or 3, and our own
+# per-position data showed position 3 accepted only ~10% of the time while costing a
+# draft forward pass on EVERY step. 3 is also what the 2.93 tok/step reference used.
+#
+# NOTE the arch string differs between quants — nvidia declares Qwen4ExpForConditionalGeneration
+# / model_type qwen4_exp (the upstream-PR naming), local-inference-lab declared
+# Qwen3_8FlashNextForConditionalGeneration. The b12x image registers BOTH and aliases them
+# onto the same vllm.models.qwen3_8_flash_next module, so either loads.
+#
+# The old checkpoint was DELETED from both nodes to make room (.237 could not hold both).
+# Re-download pin if ever needed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 revision
+# ada4da32a583a78aa47299f45a70603c950490b8.
+
+# ── WHY --hf-overrides ple_embedding_dtype IS REQUIRED FOR THE NVIDIA QUANT ───
+# Without it the load dies at:
+#   ple_layer.py:718 TypeError: PLE shard 0 weight must have dtype torch.bfloat16,
+#                               got torch.float8_e4m3fn
+# The b12x PLE loader picks its storage mode from `config.ple_embedding_dtype` and
+# DEFAULTS TO "bfloat16" when the key is absent (ple_layer.py:216). nvidia's config.json
+# omits the key while shipping the n-gram table at FP8 — that is the same property that
+# makes its MTP/PLE match the FP8 release byte-for-byte. The old local-inference-lab
+# checkpoint declared `ple_embedding_dtype: "nvfp4"`, which is why it loaded unmodified.
+# FP8 PLE is fully supported, just undeclared: _STORAGE_MODES maps
+# "float8_e4m3fn" -> "fp8_e4m3_per_tensor". So this is a config declaration, not a patch.
+
+# ── --enable-expert-parallel IS REQUIRED BY THE NVIDIA QUANT ──────────────────
+# nvidia's MTP experts are block-FP8 with 128x128 blocks. Under pure TP=2 the MoE
+# intermediate (640) is tensor-sliced to 320 per rank and the loader rejects it:
+#   ValueError: The output_size of gate's and up's weight = 320 is not divisible by
+#               weight quantization block_n = 128.
+# Expert parallelism distributes whole experts instead of slicing their width, so each
+# rank keeps the full 640 (640/128 = 5). This is exactly the published guidance for this
+# checkpoint ("use expert parallelism so the MTP expert width remains compatible with its
+# 128x128 FP8 blocks"). NOTE this changes MoE execution for the MAIN model too, not just
+# the MTP draft — EP vs TP for the 512 routed experts is a real performance variable we
+# have NOT A/B'd on this hardware. The old local-inference-lab quant needed none of this:
+# its MTP experts were W4A16_NVFP4, which has no block-divisibility constraint.
+
+recipe_version: "1"
+name: Qwen3.8-Flash-Next-NVFP4 (Cluster, b12x image, stock MoE, emosaru)
+description: vLLM serving nvidia/Qwen3.8-Flash-Next-NVFP4 on a dual DGX Spark cluster
+
+model: nvidia/Qwen3.8-Flash-Next-NVFP4
+container: vllm-node-b12x
+
+build_args:
+  - --exp-b12x
+
+cluster_only: true
+
+mods: []
+# Page-cache dropping (applied by the launcher, not declared here)
+#   Drops the FS page cache every 60s (sync; echo 3 > /proc/sys/vm/drop_caches).
+  # TWO reasons this is on, both GB10-specific:
+  #   1. LOAD: on unified memory a warm page cache starves the GPU allocator partway
+  #      through model load — the one GB10 gotcha reported for this model class, and we
+  #      load 99 GiB right after (often) having just downloaded it.
+  #   2. EARLYOOM: the loop's `sync` flushes DIRTY pages. MemAvailable counts clean
+  #      reclaimable cache but NOT dirty-writeback backlog, and that backlog is what ate
+  #      the head's margin on 2026-09-11 when a bulk download killed the serving engine
+  #      (memory/earlyoom_head_kill.md). Keeping writeback short protects that margin.
+  # NOT declared here: recipe `mods:` resolve against the EUGR checkout (run-recipe:
+  # mod_path = SCRIPT_DIR / mod), so they cannot reference this repo. UPSTREAM'S
+  # mods/drop-caches IS BROKEN ANYWAY — a double stdout redirection writes "3" to its
+  # logfile instead of to /proc/sys/vm/drop_caches, so it never drops anything. The
+  # launcher applies our corrected fork mods/drop-caches-fixed via --apply-mod instead.
+  # Verify it took: `docker exec <container> cat /tmp/drop_caches.log` -> one
+  # "<timestamp> dropped" line per minute. Seeing a bare "3" means the broken one ran.
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  pipeline_parallel: 1
+  block_size: 16
+  max_model_len: 262144
+  max_num_seqs: 16
+  max_num_batched_tokens: 4096
+  num_speculative_tokens: 3
+  gpu_memory_utilization: 0.7
+
+env:
+  CUTE_DSL_ARCH: "sm_121a"
+  SAFETENSORS_FAST_GPU: "1"
+  VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+  VLLM_SSM_CONV_STATE_LAYOUT: "DS"
+  VLLM_USE_AOT_COMPILE: "1"
+  VLLM_USE_MEGA_AOT_ARTIFACT: "1"
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+  B12X_POLICY_MODE: "auto"
+  VLLM_ENABLE_ROCE_ALLREDUCE: "1"
+  VLLM_ROCE_ALLREDUCE_MAX_SIZE: "2MB"
+
+command: |
+  vllm serve nvidia/Qwen3.8-Flash-Next-NVFP4 \
+    --host {host} \
+    --port {port} \
+    --served-model-name Qwen/Qwen3.8-Flash-Next nvidia/Qwen3.8-Flash-Next-NVFP4 local-inference-lab/Qwen3.8-Flash-Next-NVFP4 \
+    --trust-remote-code \
+    --tensor-parallel-size {tensor_parallel} \
+    --pipeline-parallel-size {pipeline_parallel} \
+    --mamba-cache-mode align \
+    --enable-expert-parallel \
+    --enable-prefix-caching \
+    --enable-prompt-tokens-details \
+    --enable-force-include-usage \
+    --enable-chunked-prefill \
+    --dtype bfloat16 \
+    --kv-cache-dtype fp8 \
+    --quantization modelopt_mixed \
+    --block-size {block_size} \
+    --load-format b12x \
+    --max-model-len {max_model_len} \
+    --hf-overrides '{{"text_config": {{"ple_embedding_dtype": "float8_e4m3fn"}}}}' \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":{num_speculative_tokens}}}' \
+    --gdn-decode-kernel b12x \
+    --linear-backend b12x \
+    --no-enable-flashinfer-autotune \
+    --mm-encoder-tp-mode data \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice \
+    --compilation-config '{{"pass_config":{{"fuse_act_quant":true}}}}' \
+    --gpu-memory-utilization {gpu_memory_utilization}
