@@ -157,7 +157,12 @@ defaults:
   max_num_seqs: 16
   max_num_batched_tokens: 4096
   num_speculative_tokens: 3
-  gpu_memory_utilization: 0.7
+  # 0.8, not eugr's 0.7. This is the value every measurement in
+  # memory/flashnext_bakeoff_2026_09_24.md was taken at (KV 23.97-23.99 GiB,
+  # ~2.495M tokens, 9.51-9.52x concurrency) and it is what the field runs (0.80-0.835).
+  # It still leaves 7-13 GiB host headroom, far better than DS4F's 3 GiB, so it does
+  # NOT reintroduce the earlyoom exposure. Raising it further is untested here.
+  gpu_memory_utilization: 0.8
 
 env:
   CUTE_DSL_ARCH: "sm_121a"

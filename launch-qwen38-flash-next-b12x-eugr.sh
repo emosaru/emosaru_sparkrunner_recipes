@@ -36,7 +36,10 @@
 #      routine Ubuntu maintenance was enough to tip it; it killed the Vision-Exp trial
 #      after a 5-day soak. 0.7 buys back ~18 GB of that margin.
 #   2. The forum reports GB10 page cache starves the GPU allocator above ~0.82.
-# If you want more KV, measure first, and raise in single steps with `GMU=0.75 ./this`.
+# DEFAULT IS NOW 0.8 (set in the -noMoeB12x recipe), matching every measurement in
+# memory/flashnext_bakeoff_2026_09_24.md and the field's 0.80-0.835. It leaves 7-13 GiB
+# host headroom vs DS4F's 3 GiB. To back OFF use `GMU=0.75 ./this`; to push up, note the
+# forum's ~0.82 page-cache ceiling above and measure before trusting it.
 #
 # ── THIS REPLACES PRODUCTION ON :8000 ─────────────────────────────────────────
 # Not a co-location. As of 2026-09-11 production is DeepSeek-V4-Flash-Vision-Exp, and it must
@@ -49,7 +52,7 @@
 #   ./launch-qwen38-flash-next-b12x-eugr.sh            # launch (daemon) + wait ready
 #   REFRESH_IMAGE=1 ./launch-qwen38-flash-next-b12x-eugr.sh   # pull a fresh b12x image
 #   DOWNLOAD_MODEL=1 ./launch-qwen38-flash-next-b12x-eugr.sh  # fetch checkpoint to both nodes
-#   GMU=0.75 ./launch-qwen38-flash-next-b12x-eugr.sh          # override memory utilisation
+#   GMU=0.75 ./launch-qwen38-flash-next-b12x-eugr.sh          # back off from the 0.8 default
 #   PORT=8010 ./launch-qwen38-flash-next-b12x-eugr.sh         # side-by-side (needs free memory)
 
 set -euo pipefail
@@ -82,11 +85,32 @@ EUGR_DIR="${EUGR_DIR:-$HOME/code/spark-vllm-docker-eugr}"
 #     YARN_FACTOR=2.0 -> 524,288    YARN_FACTOR=4.0 -> 1,048,576
 YARN="${YARN:-0}"
 if [[ "$YARN" == "1" ]]; then
+  # NOTE: the YaRN recipe still carries --moe-backend b12x and so has the SAME boot
+  # failure documented below. YaRN does not boot on this stack anyway (the overrides
+  # never reach draft_model_config while MTP is on), so it has not been reworked.
   RECIPE="${RECIPE:-$SCRIPT_DIR/recipes/qwen3.8-flash-next-nvfp4-cluster-yarn-eugr.yaml}"
 else
-  RECIPE="${RECIPE:-$SCRIPT_DIR/recipes/qwen3.8-flash-next-nvfp4-cluster-eugr.yaml}"
+  # ── DEFAULT IS THE -noMoeB12x RECIPE, AND THAT IS DELIBERATE ─────────────────
+  # The plain `-cluster-eugr.yaml` recipe CANNOT BOOT with the nvidia checkpoint.
+  # `--moe-backend` is GLOBAL and there is no moe_backend_per_quant, so one value has
+  # to serve both the main model's NVFP4 routed experts and nvidia's block-FP8 MTP
+  # experts. Measured 2026-09-24 on nightly-20260923, b12x fails both ways:
+  #   TP=2 +EP -> ValueError: NvFp4 MoE backend 'B12X' does not support the deployment
+  #               configuration ... FusedMoEParallelConfig(ep_size=2, use_ep=True)
+  #   TP=1     -> ValueError: moe_backend='b12x' is not supported for FP8 MoE
+  # Dropping the flag lets each quant resolve its own backend (FLASHINFER_CUTLASS) and
+  # removes the EP prohibition. --gdn-decode-kernel b12x and --linear-backend b12x are
+  # KEPT, so 2 of the 3 b12x kernels still run.
+  # The old recipe is still reachable for comparison:
+  #   RECIPE="$SCRIPT_DIR/recipes/qwen3.8-flash-next-nvfp4-cluster-eugr.yaml" $0
+  RECIPE="${RECIPE:-$SCRIPT_DIR/recipes/qwen3.8-flash-next-nvfp4-cluster-noMoeB12x-eugr.yaml}"
 fi
-IMAGE="${IMAGE:-eugr/spark-vllm-b12x:latest}"
+# PINNED, not :latest. `eugr/spark-vllm-b12x:latest` locally still resolves to the
+# 2026-09-10 production image (retagged prod-20260910), which predates the b12x fork
+# absorbing PR #55513 and so needs the retired fix-block-fp8-mtp-modelopt mod.
+# nightly-20260923 ships that fix natively (_BLOCK_FP8_MOE_ALGOS present) and is the
+# image every measurement in memory/flashnext_bakeoff_2026_09_24.md was taken on.
+IMAGE="${IMAGE:-eugr/spark-vllm-b12x:nightly-20260923}"
 CONFIG="${CONFIG:-$SCRIPT_DIR/env/eugr-roce-flashnext.env}"
 # Our corrected fork of eugr's mods/drop-caches. Upstream's is INERT: its loop body
 # `echo 3 > /proc/sys/vm/drop_caches >> $LOG 2>&1` redirects stdout twice, so "3" lands
@@ -262,7 +286,14 @@ if [[ -n "${MOE_BACKEND:-}" ]]; then
   TMP_MB="$(mktemp -t flashnext-moe-XXXXXX.yaml)"
   sed -E "s|^    --moe-backend .*|    --moe-backend ${MOE_BACKEND} \\\\|" "$RECIPE" > "$TMP_MB"
   grep -qE "^    --moe-backend ${MOE_BACKEND} " "$TMP_MB" \
-    || { echo "✗ failed to set --moe-backend ${MOE_BACKEND}" >&2; exit 1; }
+    || { echo "✗ failed to set --moe-backend ${MOE_BACKEND}" >&2
+         grep -qE '^    --moe-backend ' "$RECIPE" \
+           || echo "  CAUSE: $(basename "$RECIPE") has NO --moe-backend line to replace." \
+                   "The default -noMoeB12x recipe deliberately omits it (b12x cannot serve" \
+                   "nvidia's block-FP8 MTP, see the recipe header). MOE_BACKEND only works" \
+                   "on a recipe that already sets the flag, e.g." \
+                   "RECIPE=.../qwen3.8-flash-next-nvfp4-cluster-eugr.yaml" >&2
+         exit 1; }
   RECIPE="$TMP_MB"
   echo "  ▸ MOE_BACKEND=${MOE_BACKEND} (temp recipe $TMP_MB)"
 fi
@@ -299,14 +330,14 @@ if [[ "$YARN" == "1" ]]; then
   FORK_DESC="our fork; deltas = --served-model-name + YaRN rope override"
 else
   CTX_DESC="len 262144 native (no rope scaling)"
-  FORK_DESC="our fork; single delta = --served-model-name"
+  FORK_DESC="our fork; drops --moe-backend b12x, gmu 0.8, +served-model-name && usage flags"
 fi
 echo "▶ launching Qwen3.8-Flash-Next-NVFP4 (eugr B12X, TP=2, MTP 4, $CTX_DESC) …"
 echo "  recipe:    $RECIPE   ($FORK_DESC)"
 echo "  model:     $MODEL"
 echo "  image:     $IMAGE"
 echo "  config:    $CONFIG   (RoCE fabric, container $NAME, master port 29503)"
-echo "  port:      $PORT     gmu: ${GMU:-0.7 (recipe default — see header)}"
+echo "  port:      $PORT     gmu: ${GMU:-0.8 (recipe default — see header)}"
 [[ "$DROP_CACHES" == "1" ]] && echo "  mods:      drop-caches-fixed (our fork; upstream's is inert — see its PROVENANCE.md)"
 [[ ${#OVERRIDES[@]} -gt 0 ]] && echo "  overrides: ${OVERRIDES[*]}"
 echo
