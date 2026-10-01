@@ -403,6 +403,116 @@ if [[ "${DRAFT_VOCAB:-0}" != "0" ]]; then
   echo "    hardware. Confirm the 'Reduced-vocab MTP drafting ENABLED' line on rank 0,"
   echo "    then A/B decode tok/s against a DRAFT_VOCAB=0 boot."
 fi
+# ── RECURRENT CHECKPOINT POLICY — DEFAULT `aligned`; THIS IS THE CRASH FIX ───
+# DEFAULT IS `aligned`, which disables the request-boundary checkpoint subsystem — the
+# code we actually crash in. vLLM's own default is `auto`, which ENABLES it, so a bare
+# launch used to select the faulting path without anyone choosing it. Established
+# 2026-10-01:
+#
+#   * The faulting frames are `gpu_worker.py:wait_for_boundary_checkpoint_copies` ->
+#     `v1/worker/gpu/boundary_checkpoint.py:wait_for_copies`, and the GPU-level fault is
+#     `Xid 31 MMU Fault ... ACCESS_TYPE_VIRT_WRITE` — a wild WRITE from a state copy.
+#   * **That whole subsystem does not exist upstream.** GitHub code search over
+#     vllm-project/vllm returns 0 for `boundary_checkpoint.py`, for
+#     `wait_for_boundary_checkpoint_copies` and for `NUM_BOUNDARY_CHECKPOINT_SLOTS`,
+#     while the control query (`mamba_utils.py`) returns 3. It is a downstream fork
+#     feature — which is why NO upstream PR fixes this, #50021 included, and it matches
+#     vllm#56756's author closing their PR because "the observable fault originated in a
+#     downstream fork's custom kernel rather than upstream vLLM code".
+#
+# `VllmConfig.use_request_boundary_checkpoints` (config/vllm.py:642) gates it, and every
+# one of its ~15 conditions is true for us: policy in ("auto","request_boundaries"),
+# prefix caching, mamba-cache-mode align, V2 runner, model_type qwen3_8_flash_next, MTP,
+# PP=1/DP=1/DCP=1, and `linear_backend == "b12x"`. Default policy is "auto", so we have
+# been running it all along without ever choosing it.
+#
+# Values (config/cache.py:63): "auto" | "aligned" | "request_boundaries".
+#   * "request_boundaries" retains a chat-instruction prefix, one pre-final-chunk prefill
+#     checkpoint, the completed prompt and the committed response endpoint.
+#   * "aligned" preserves conventional BLOCK-ALIGNED retention — not a degraded mode,
+#     just the ordinary strategy.
+#   * "auto" picks request boundaries where supported, which is us.
+#
+# This keeps MTP, prefix caching, CUDA graphs and the b12x kernels, so decode throughput
+# should be unchanged — unlike disabling spec decode (~2.5x tok/step) or --enforce-eager.
+# What it may change is multi-turn prefix-cache HIT QUALITY, since retention moves from
+# semantic endpoints to block boundaries. Judge it on tok/s AND cache hit rate.
+#
+# MEASURED 2026-10-01 with scripts/flashnext_corruption_ab.py --mode mixed (the only
+# reproducer we have; it kills the stock config in ~20 min):
+#   * baseline `auto`:  2 boots, BOTH DEAD (32 min; request 28 of 32)
+#   * `aligned`:        96 requests clean, 35+ min continuous load, 0 Xid, 0 illegal-access
+#   * decode 31.5 vs 31.0 tok/s, long-req 132.2s vs 132.6s, prefix cache 90.0%,
+#     KV pool -0.3% -> the fix is free.
+#
+# To deliberately go back to the faulting path (don't, outside an A/B):
+#   CKPT_POLICY=auto ./launch-qwen38-flash-next-b12x-eugr.sh
+#
+# The value is always injected explicitly so the engine log records which path ran.
+CKPT_POLICY="${CKPT_POLICY:-aligned}"
+if [[ -n "${CKPT_POLICY:-}" ]]; then
+  case "$CKPT_POLICY" in
+    auto|aligned|request_boundaries) ;;
+    *) echo "✗ CKPT_POLICY must be auto|aligned|request_boundaries (got '$CKPT_POLICY')" >&2; exit 1 ;;
+  esac
+  TMP_CKPT="$(mktemp -t flashnext-ckpt-XXXXXX.yaml)"
+  sed -E "s|^(    --mamba-cache-mode align) \\\\$|\1 \\\\\n    --recurrent-checkpoint-policy ${CKPT_POLICY} \\\\|" \
+    "$RECIPE" > "$TMP_CKPT"
+  grep -qE "^    --recurrent-checkpoint-policy ${CKPT_POLICY} " "$TMP_CKPT" \
+    || { echo "✗ failed to inject --recurrent-checkpoint-policy into $RECIPE" >&2; exit 1; }
+  RECIPE="$TMP_CKPT"
+  echo "  ▸ CKPT_POLICY=${CKPT_POLICY} (temp recipe $TMP_CKPT)"
+  if [[ "$CKPT_POLICY" == "aligned" ]]; then
+    echo "    ✓ request-boundary checkpoints DISABLED (the crash fix; see header)"
+  else
+    echo "    ⚠ request-boundary checkpoints ENABLED — this is the subsystem that faults"
+    echo "      (Xid 31 wild write in boundary_checkpoint.py, 5+ deaths). Only do this"
+    echo "      for a deliberate A/B against the fix."
+  fi
+fi
+
+# ── BOUNDED ACCEPTED-TOKEN STATE LOOKUPS — MEASURED 2026-10-01: NOT A FIX ────
+# KEPT FOR THE RECORD ONLY. Port of vLLM PR #50021. A/B'd against the mixed-concurrency
+# reproducer: 2 boots, one survived 48 requests, **the other died in round 1**. It does
+# not fix anything, and the reason is now understood — #50021 patches mamba_utils.py /
+# causal_conv1d / FLA / KDA, but we fault in `v1/worker/gpu/boundary_checkpoint.py`,
+# which that patch never touches and which does not exist upstream at all. Use
+# CKPT_POLICY (above) instead. Do not enable this expecting stability.
+# Port of vLLM PR #50021 (OPEN, unmerged as of 2026-09-30). Bounds every block-table
+# column derived from a per-request accepted-token count before it becomes an address,
+# across the GDN/KDA/Mamba spec-decode kernels. Upstream matches our stack exactly:
+# hybrid GDN + MTP + prefix caching + --mamba-cache-mode align, and the patched comment
+# says an out-of-range column becomes a wild address "rather than merely a wrong copy" —
+# i.e. ONE defect that corrupts recurrent state silently when the stray column lands
+# inside the cache and faults when it lands outside. That is both of our symptoms: the
+# degenerate constant-token reasoning loops AND the four
+# `CUDA error: an illegal memory access was encountered` deaths.
+#
+# Pure Python/Triton (7 files, no CUDA) so it is a mod, not a rebuild — which matters:
+# both Sparks were at 92%/96% disk when this was written and a 36 GB image did not fit.
+# Defensive masking only: out-of-range columns load an `other=-1` sentinel and are
+# rejected by `<= 0` guards, falling into pre-existing invalid-state paths. No stream or
+# synchronisation changes, so the worst case is that it is inert.
+#
+#   BOUND_ACCEPTED=1 ./launch-qwen38-flash-next-b12x-eugr.sh
+#
+# Default OFF deliberately: this is an unmerged upstream PR and the point is a clean A/B
+# against the crash baseline, so a bare launch stays the config we have been running.
+# The mod refuses to half-apply — it dry-runs first and aborts if the vLLM base has
+# drifted from v0.1.dev21504+g57fdda71b (eugr nightly-20260923), which it was ported
+# against. See mods/bound-accepted-token-state-lookups/PROVENANCE.md and
+# memory/flashnext_cuda_illegal_access_2026_09_25.md.
+BOUND_ACCEPTED_MOD="${BOUND_ACCEPTED_MOD:-$SCRIPT_DIR/mods/bound-accepted-token-state-lookups}"
+if [[ "${BOUND_ACCEPTED:-0}" == "1" ]]; then
+  [[ -x "$BOUND_ACCEPTED_MOD/run.sh" ]] || {
+    echo "✗ bound-accepted-token mod missing: $BOUND_ACCEPTED_MOD/run.sh" >&2; exit 1; }
+  MODS+=(--apply-mod "$BOUND_ACCEPTED_MOD")
+  echo "  ⚠ bounded accepted-token state lookups ON (vLLM PR #50021, unmerged) — expect"
+  echo "    the 'accepted-token-derived block-table columns are now bounded' line on both"
+  echo "    ranks. Judge it on MTTF and on whether long-context output stays coherent;"
+  echo "    it should not change throughput."
+fi
+
 ( cd "$EUGR_DIR" && ./run-recipe.sh "$RECIPE" -d \
     --config "$CONFIG" -t "$IMAGE" --port "$PORT" \
     "${MODS[@]}" "${OVERRIDES[@]}" "$@" )
