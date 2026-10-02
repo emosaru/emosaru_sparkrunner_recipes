@@ -349,6 +349,89 @@ def boundary_targets(steps: list[int]) -> list[int]:
     return out
 
 
+def run_session(args) -> int:
+    """Grow ONE conversation turn by turn, the way a real agent session does.
+
+    This exists because the single-stream `boundary` sweep came back 11/11 clean at the
+    exact lengths that kill a resumed agent session (199,171 and 204,369 prompt tokens),
+    while the user's session died in 10 requests at 199,360. The difference is not length
+    and not concurrency: in the sweep, position N arrives via one big PREFILL; in a real
+    session, position N was built incrementally, with the assistant's own DECODE-produced
+    tokens folded into the next prompt and a cache-hit resume on every turn. For a
+    recurrent model those are not equivalent -- the retained state at a block boundary
+    differs depending on whether that boundary was crossed during prefill or during
+    decode.
+
+    So: seed with a large document, then take many short turns on top, appending each real
+    response. Every turn is a genuine cache-hit resume over a context that grew by decode.
+    """
+    url = f"http://{args.host}:{args.port}/v1/chat/completions"
+    seed_chars = int(args.seed_tokens * CPT[0])
+    msgs = [{"role": "user", "content": make_prompt(seed_chars)}]
+    print(f"label={args.label}  mode=session  seed~{args.seed_tokens} tok  "
+          f"turns={args.turns}  (mamba block={MAMBA_BLOCK})")
+    print(f"{'turn':>5} {'prompt':>9} {'cached':>9} {'out':>6} {'xing':>4} {'blk_rem':>8} "
+          f"{'rep':>4} {'finish':>8}  verdict")
+    results: list[dict] = []
+    for turn in range(args.turns):
+        payload = {"model": args.model, "messages": msgs,
+                   "max_tokens": args.turn_tokens, "temperature": 0}
+        t0 = time.time()
+        status, body = post(url, payload, args.timeout)
+        dt = time.time() - t0
+        if status != 200 or not isinstance(body, dict):
+            print(f"{turn:>5} {'-':>9} {'-':>9} {'-':>6} {'-':>4} {'-':>8} {'-':>4} "
+                  f"  *** HTTP {status}: {str(body)[:110]}")
+            results.append({"turn": turn, "http_status": status,
+                            "error": str(body)[:2000], "seconds": round(dt, 1)})
+            break
+        usage = body.get("usage") or {}
+        ptok = usage.get("prompt_tokens") or 0
+        otok = usage.get("completion_tokens") or 0
+        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+        choice = (body.get("choices") or [{}])[0]
+        m = choice.get("message") or {}
+        content = m.get("content") or ""
+        reasoning = m.get("reasoning") or m.get("reasoning_content") or ""
+        finish = choice.get("finish_reason")
+        rep = max(degeneration_report(content)["longest_run"],
+                  degeneration_report(reasoning)["longest_run"])
+        share = max(degeneration_report(content)["top_token_share"],
+                    degeneration_report(reasoning)["top_token_share"])
+        crossings = (ptok + otok) // MAMBA_BLOCK - ptok // MAMBA_BLOCK
+        verdict = "CORRUPT" if (rep >= 8 or share >= 0.30) else (
+            "trunc" if finish == "length" else "ok")
+        print(f"{turn:>5} {ptok:>9} {str(cached):>9} {otok:>6} {crossings:>4} "
+              f"{ptok % MAMBA_BLOCK:>8} {rep:>4} {str(finish):>8}  {verdict}")
+        results.append({"turn": turn, "prompt_tokens": ptok, "cached_tokens": cached,
+                        "completion_tokens": otok, "boundary_crossings": crossings,
+                        "block_remainder": ptok % MAMBA_BLOCK, "worst_run": rep,
+                        "worst_share": share, "finish_reason": finish,
+                        "verdict": verdict, "seconds": round(dt, 1),
+                        "content_head": content[:300]})
+        # Append the REAL response, then a short new user turn -> the context grows the
+        # way an agent session grows, and the next request resumes over it.
+        msgs.append({"role": "assistant", "content": content or "(thinking only)"})
+        msgs.append({"role": "user", "content":
+                     f"Turn {turn + 2}: in two sentences, name one more risk in the dump "
+                     f"not already mentioned, then restate note {NEEDLE_ID} verbatim."})
+        if ptok > args.max_prompt:
+            print(f"  reached {ptok} > --max-prompt {args.max_prompt}; stopping")
+            break
+
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+    out = OUTDIR / f"{args.label}.json"
+    out.write_text(json.dumps({"label": args.label, "mode": "session",
+                               "when": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                               "results": results}, indent=2))
+    bad = [r for r in results if r.get("verdict") == "CORRUPT"
+           or r.get("http_status") in (0, 500)]
+    print(f"\nwrote {out}")
+    print(f"VERDICT[{args.label}]: {len(bad)} corrupt/dead over {len(results)} turns; "
+          f"final prompt {results[-1].get('prompt_tokens', 0) if results else 0} tok")
+    return 1 if bad else 0
+
+
 def run(args) -> int:
     url = f"http://{args.host}:{args.port}/v1/chat/completions"
     steps = [int(s) for s in args.steps.split(",")]
@@ -442,7 +525,8 @@ def main() -> int:
     ap.add_argument("--steps", default="40000,100000,131072,140000,150000,165000,180000")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"))
-    ap.add_argument("--mode", choices=("sweep", "boundary", "mixed"), default="mixed",
+    ap.add_argument("--mode", choices=("sweep", "boundary", "mixed", "session"),
+                    default="mixed",
                     help="sweep: sequential, targets as given (came back clean -- kept "
                          "for reference). boundary: sequential, targets nudged just "
                          "under a mamba block boundary. mixed: boundary targets run "
@@ -451,9 +535,19 @@ def main() -> int:
     ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--shorts", type=int, default=4,
                     help="concurrent short (~900 token) requests in mixed mode")
+    # session mode: simulate a real agent conversation growing by decode
+    ap.add_argument("--seed-tokens", type=int, default=150000,
+                    help="session mode: size of the opening document turn")
+    ap.add_argument("--turns", type=int, default=60)
+    ap.add_argument("--turn-tokens", type=int, default=1200,
+                    help="max_tokens per session turn")
+    ap.add_argument("--max-prompt", type=int, default=215000,
+                    help="session mode: stop once the prompt exceeds this")
     args = ap.parse_args()
     if args.compare:
         return compare(*args.compare)
+    if args.mode == "session":
+        return run_session(args)
     return run(args)
 
 

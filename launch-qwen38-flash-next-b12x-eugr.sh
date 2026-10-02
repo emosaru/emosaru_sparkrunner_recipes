@@ -403,6 +403,82 @@ if [[ "${DRAFT_VOCAB:-0}" != "0" ]]; then
   echo "    hardware. Confirm the 'Reduced-vocab MTP drafting ENABLED' line on rank 0,"
   echo "    then A/B decode tok/s against a DRAFT_VOCAB=0 boot."
 fi
+# ── CUDA GRAPH MODE — DEFAULT `FULL_DECODE_ONLY`; BEST STABILITY LEVER FOUND ─
+# DEFAULT IS `FULL_DECODE_ONLY`. vLLM's own default is FULL_AND_PIECEWISE, which is the
+# configuration that crashes. This is also what EVERY published dual-Spark TP=2+MTP
+# recipe runs:
+#   * getrefined/Qwen3.8-Flash-Next-NVFP4-vLLM-DGX-Spark (first 2x Spark deployment):
+#     --compilation-config '{"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY"}'
+#   * MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks: FULL_DECODE_ONLY, sizes 1-64
+#   * nkavassalis/spark-tuning: reports mode:3 + FULL_AND_PIECEWISE HUNG the head node
+#     and exhausted unified memory, requiring a power cycle.
+#
+# Why it is the right shape for our crash: our fault fires DURING PREFILL (prompt
+# throughput goes 870 tok/s -> 0). FULL_AND_PIECEWISE applies piecewise CUDA graphs to
+# prefill and mixed batches; FULL_DECODE_ONLY graphs only pure decode and runs prefill
+# eagerly. That removes CUDA graphs from exactly the phase we die in while KEEPING the
+# decode graphs where throughput lives — unlike --enforce-eager, which vllm#56736 lists
+# as a workaround but which would cost decode speed. It also fits #56736 implicating
+# CUDA-graph replay.
+#
+# Nobody publishes MTTF, so "stable" is unproven everywhere; but none of those recipes
+# report our crash and all of them differ from us on this one flag.
+#
+# MEASURED 2026-10-02 with scripts/flashnext_corruption_ab.py --mode mixed, same load
+# shape for every arm, and TWO soaks per arm (soak 2 is what caught `aligned`):
+#   auto    + FULL_AND_PIECEWISE   ~28 requests  (2 of 2 boots died)
+#   aligned + FULL_AND_PIECEWISE   118 requests
+#   aligned + FULL_DECODE_ONLY     256 requests clean, 322 boundary crossings, ~78 min,
+#                                  0 Xid, 0 illegal-access   <- this default
+# Costs nothing and gains memory: decode 31.1 tok/s (vs 31.5 / 31.0), long-request median
+# 132.2s (identical), prefix cache 91.4%, and KV 3,128,991 tokens vs 2,970,651 (+5%,
+# because piecewise graphs no longer reserve memory; ~+25% vs stock).
+#
+# Why it is the right shape: our fault fires DURING PREFILL (prompt throughput 870 tok/s
+# -> 0). FULL_AND_PIECEWISE applies piecewise CUDA graphs to prefill and mixed batches;
+# FULL_DECODE_ONLY graphs only pure decode and runs prefill eagerly, removing CUDA graphs
+# from exactly the phase we die in while KEEPING the decode graphs where throughput lives
+# (unlike --enforce-eager). Consistent with vllm#56736 implicating CUDA-graph replay.
+#
+# This being the DEFAULT also matters for scripts/flashnext-supervisor.sh, which recovers
+# with a bare launch — before this, every auto-recovery silently reverted to the crashing
+# FULL_AND_PIECEWISE.
+#
+# To go back for a deliberate A/B:
+#   CUDAGRAPH_MODE=FULL_AND_PIECEWISE ./launch-qwen38-flash-next-b12x-eugr.sh
+#
+# NOT yet proven a fix: n=1 boot and real-workload MTTF is unmeasured. The synthetic
+# hammer is harsher than real traffic (`aligned` managed 118 synthetic vs 394 real).
+#
+# The value is merged INTO the recipe's existing --compilation-config so fuse_act_quant
+# survives, and is always injected explicitly so the engine log records which path ran.
+CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"
+if [[ -n "${CUDAGRAPH_MODE:-}" ]]; then
+  TMP_CG="$(mktemp -t flashnext-cudagraph-XXXXXX.yaml)"
+  CUDAGRAPH_MODE="$CUDAGRAPH_MODE" python3 - "$RECIPE" "$TMP_CG" <<'PYEOF'
+import os, re, sys
+src, dst = sys.argv[1], sys.argv[2]
+mode = os.environ["CUDAGRAPH_MODE"]
+t = open(src).read()
+# The recipe line is a str.format template, so braces are doubled.
+old = """--compilation-config '{{"pass_config":{{"fuse_act_quant":true}}}}'"""
+new = ('--compilation-config \'{{"pass_config":{{"fuse_act_quant":true}},'
+       '"cudagraph_mode":"%s"}}\'' % mode)
+if t.count(old) != 1:
+    sys.exit(f"expected exactly one compilation-config line, found {t.count(old)}")
+open(dst, "w").write(t.replace(old, new, 1))
+PYEOF
+  [[ $? -eq 0 ]] || { echo "✗ failed to inject cudagraph_mode into $RECIPE" >&2; exit 1; }
+  grep -q "\"cudagraph_mode\":\"${CUDAGRAPH_MODE}\"" "$TMP_CG" \
+    || { echo "✗ cudagraph_mode not present in $TMP_CG" >&2; exit 1; }
+  RECIPE="$TMP_CG"
+  echo "  ▸ CUDAGRAPH_MODE=${CUDAGRAPH_MODE} (temp recipe $TMP_CG)"
+  if [[ "$CUDAGRAPH_MODE" == "FULL_AND_PIECEWISE" ]]; then
+    echo "    ⚠ FULL_AND_PIECEWISE is the CRASHING config (~28 requests stock, 118 with"
+    echo "      aligned). Only do this for a deliberate A/B."
+  fi
+fi
+
 # ── RECURRENT CHECKPOINT POLICY — DEFAULT `aligned`; THIS IS THE CRASH FIX ───
 # DEFAULT IS `aligned`, which disables the request-boundary checkpoint subsystem — the
 # code we actually crash in. vLLM's own default is `auto`, which ENABLES it, so a bare
