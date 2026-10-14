@@ -162,7 +162,10 @@ defaults:
   # ~2.495M tokens, 9.51-9.52x concurrency) and it is what the field runs (0.80-0.835).
   # It still leaves 7-13 GiB host headroom, far better than DS4F's 3 GiB, so it does
   # NOT reintroduce the earlyoom exposure. Raising it further is untested here.
-  gpu_memory_utilization: 0.8
+  # 0.77 since 2026-10-14: frees ~3.65 GiB/node so Qwen3-TTS 1.7B-Base (tts/, ~7.5 GiB
+  # peak) can co-locate on the worker (.237) above earlyoom's ~2.5 GB floor. Costs
+  # ~14% KV (25.69 -> ~22 GiB, 3.16M -> ~2.7M tok, 12.1x -> ~10.3x @262k).
+  gpu_memory_utilization: 0.77
 
 env:
   CUTE_DSL_ARCH: "sm_121a"

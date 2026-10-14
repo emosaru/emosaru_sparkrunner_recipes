@@ -36,7 +36,8 @@
 #      routine Ubuntu maintenance was enough to tip it; it killed the Vision-Exp trial
 #      after a 5-day soak. 0.7 buys back ~18 GB of that margin.
 #   2. The forum reports GB10 page cache starves the GPU allocator above ~0.82.
-# DEFAULT IS NOW 0.8 (set in the -noMoeB12x recipe), matching every measurement in
+# DEFAULT IS NOW 0.77 (set in the -noMoeB12x recipe; was 0.8 until 2026-10-14, lowered to
+# make room for Qwen3-TTS on .237 — see tts/). 0.8 matched every measurement in
 # memory/flashnext_bakeoff_2026_09_24.md and the field's 0.80-0.835. It leaves 7-13 GiB
 # host headroom vs DS4F's 3 GiB. To back OFF use `GMU=0.75 ./this`; to push up, note the
 # forum's ~0.82 page-cache ceiling above and measure before trusting it.
@@ -52,7 +53,7 @@
 #   ./launch-qwen38-flash-next-b12x-eugr.sh            # launch (daemon) + wait ready
 #   REFRESH_IMAGE=1 ./launch-qwen38-flash-next-b12x-eugr.sh   # pull a fresh b12x image
 #   DOWNLOAD_MODEL=1 ./launch-qwen38-flash-next-b12x-eugr.sh  # fetch checkpoint to both nodes
-#   GMU=0.75 ./launch-qwen38-flash-next-b12x-eugr.sh          # back off from the 0.8 default
+#   GMU=0.75 ./launch-qwen38-flash-next-b12x-eugr.sh          # back off from the 0.77 default
 #   PORT=8010 ./launch-qwen38-flash-next-b12x-eugr.sh         # side-by-side (needs free memory)
 
 set -euo pipefail
@@ -330,14 +331,14 @@ if [[ "$YARN" == "1" ]]; then
   FORK_DESC="our fork; deltas = --served-model-name + YaRN rope override"
 else
   CTX_DESC="len 262144 native (no rope scaling)"
-  FORK_DESC="our fork; drops --moe-backend b12x, gmu 0.8, +served-model-name && usage flags"
+  FORK_DESC="our fork; drops --moe-backend b12x, gmu 0.77, +served-model-name && usage flags"
 fi
 echo "▶ launching Qwen3.8-Flash-Next-NVFP4 (eugr B12X, TP=2, MTP 4, $CTX_DESC) …"
 echo "  recipe:    $RECIPE   ($FORK_DESC)"
 echo "  model:     $MODEL"
 echo "  image:     $IMAGE"
 echo "  config:    $CONFIG   (RoCE fabric, container $NAME, master port 29503)"
-echo "  port:      $PORT     gmu: ${GMU:-0.8 (recipe default — see header)}"
+echo "  port:      $PORT     gmu: ${GMU:-0.77 (recipe default — see header)}"
 [[ "$DROP_CACHES" == "1" ]] && echo "  mods:      drop-caches-fixed (our fork; upstream's is inert — see its PROVENANCE.md)"
 [[ ${#OVERRIDES[@]} -gt 0 ]] && echo "  overrides: ${OVERRIDES[*]}"
 echo
